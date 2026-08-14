@@ -121,16 +121,55 @@ function base64UrlToBytes(param) {
   return bytes;
 }
 
-// Accepts either a full scanned QR URL (http(s)://google.com/cardboard/cfg?p=...,
-// or the newer https://arvr.google.com/cardboard/... form) or a bare base64 `p` payload.
-export function parseCardboardProfileText(text) {
-  let param = text.trim();
+// Some viewer manufacturers (e.g. Homido) print a QR code that encodes a shortened link
+// (goo.gl/xxxxx) which itself redirects to the real .../cardboard/cfg?p=... URL, rather than
+// encoding that URL directly. A page hosted on GitHub Pages can't follow that redirect itself
+// (the browser's fetch() is blocked by CORS — google.com doesn't grant this origin permission
+// to read the response), so this is surfaced as a distinct error the UI can offer a real,
+// user-driven fix for: open the link in a normal browser tab (which isn't subject to CORS)
+// and paste back whatever URL it lands on.
+export class UnresolvedLinkError extends Error {
+  constructor(url) {
+    super(`"${url}" looks like a link but has no cardboard config in it — it may need to be opened first`);
+    this.url = url;
+  }
+}
+
+// Matches a bare "hostname.tld/..." with no scheme, e.g. "goo.gl/GvHq4R". Deliberately
+// requires a dot before the first path/query separator: base64url payloads (this function's
+// other candidate interpretation) use the alphabet [A-Za-z0-9_-], which never contains ".",
+// so this can't misfire on a raw pasted payload -- the WHATWG URL parser is otherwise happy to
+// treat *any* such string as a valid (bogus) hostname, which would misclassify every raw paste.
+const BARE_HOSTNAME_RE = /^[a-z0-9-]+(\.[a-z0-9-]+)+(?=[/?#]|$)/i;
+
+function tryParseUrl(text) {
   try {
-    const url = new URL(param);
-    const p = url.searchParams.get("p");
-    if (p) param = p;
+    return new URL(text);
   } catch {
-    // Not a URL — assume it's already the raw base64 payload.
+    // no scheme -- only worth retrying if it actually looks like a bare hostname+path.
+  }
+  if (!BARE_HOSTNAME_RE.test(text)) return null;
+  try {
+    return new URL(`https://${text}`);
+  } catch {
+    return null;
+  }
+}
+
+// Accepts a full scanned QR URL (http(s)://google.com/cardboard/cfg?p=..., the newer
+// https://arvr.google.com/cardboard/... form, or a bare "google.com/cardboard/cfg?p=..." with
+// no scheme), or a bare base64 `p` payload.
+export function parseCardboardProfileText(text) {
+  const trimmed = text.trim();
+  const url = tryParseUrl(trimmed);
+  let param = trimmed;
+  if (url) {
+    const p = url.searchParams.get("p");
+    if (p) {
+      param = p;
+    } else {
+      throw new UnresolvedLinkError(url.toString());
+    }
   }
   const bytes = base64UrlToBytes(param);
   return decodeDeviceParams(bytes);

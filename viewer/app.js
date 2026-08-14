@@ -1,4 +1,4 @@
-import { DEFAULT_PROFILE, parseCardboardProfileText } from "./cardboard-profile.js";
+import { DEFAULT_PROFILE, parseCardboardProfileText, UnresolvedLinkError } from "./cardboard-profile.js";
 import { GlViewer } from "./gl-viewer.js";
 import { QrScanner, qrScanningSupported } from "./qr-scan.js";
 import { loadPxPerMeter, initCalibration } from "./calibration.js";
@@ -137,13 +137,37 @@ el("reset-profile-btn").addEventListener("click", () => {
   saveProfile({ ...DEFAULT_PROFILE });
   requestRedraw();
 });
+// Renders a parse error into `statusEl` (a plain-text status element). For an
+// UnresolvedLinkError (e.g. a QR code encoding a goo.gl short link this page can't follow
+// itself due to CORS), adds a real, clickable link the user can open themselves -- a normal
+// browser navigation isn't subject to CORS -- so they can copy back whatever URL it lands on.
+function renderParseError(statusEl, err) {
+  statusEl.textContent = "";
+  if (err instanceof UnresolvedLinkError) {
+    statusEl.append("✕ That's a link, but it has no Cardboard config in it. ");
+    const link = document.createElement("a");
+    link.href = err.url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = "Open it ↗";
+    statusEl.append(link);
+    statusEl.append(", then paste the URL it lands on above.");
+  } else {
+    statusEl.textContent = `✕ Could not parse that: ${err.message}`;
+  }
+}
+
 el("manual-qr-apply").addEventListener("click", () => {
   const text = el("manual-qr-input").value;
+  const status = el("manual-qr-status");
+  status.classList.remove("qr-status--error");
   try {
     saveProfile(parseCardboardProfileText(text));
     requestRedraw();
+    status.textContent = "";
   } catch (err) {
-    alert(`Could not parse that QR/config text: ${err.message}`);
+    status.classList.add("qr-status--error");
+    renderParseError(status, err);
   }
 });
 
@@ -170,6 +194,7 @@ el("scan-qr-btn").addEventListener("click", async () => {
   qrScanView.hidden = false;
   setQrStatus("Starting camera…", null);
   scanner = new QrScanner(el("qr-video"));
+  let keepOpenForLink = false;
   try {
     await scanner.start();
     setQrStatus("Scanning…", null);
@@ -180,12 +205,21 @@ el("scan-qr-btn").addEventListener("click", async () => {
     setQrStatus(`✓ Scanned "${scanned.vendor} ${scanned.model}"`, "success");
     await new Promise((r) => setTimeout(r, 1800));
   } catch (err) {
-    setQrStatus(`✕ Scan failed: ${err.message}`, "error");
-    await new Promise((r) => setTimeout(r, 1500));
+    if (err instanceof UnresolvedLinkError) {
+      // Keep the panel open (with Cancel available) so the user has time to tap the link.
+      keepOpenForLink = true;
+      setQrStatus("", "error");
+      renderParseError(el("qr-status"), err);
+    } else {
+      setQrStatus(`✕ Scan failed: ${err.message}`, "error");
+      await new Promise((r) => setTimeout(r, 1500));
+    }
   } finally {
     scanner.stop();
-    qrScanView.hidden = true;
-    settingsPanel.hidden = false;
+    if (!keepOpenForLink) {
+      qrScanView.hidden = true;
+      settingsPanel.hidden = false;
+    }
   }
 });
 el("qr-cancel-btn").addEventListener("click", () => {
