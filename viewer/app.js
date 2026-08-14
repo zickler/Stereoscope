@@ -1,7 +1,7 @@
 import { DEFAULT_PROFILE, parseCardboardProfileText, UnresolvedLinkError } from "./cardboard-profile.js";
 import { GlViewer } from "./gl-viewer.js";
 import { QrScanner, qrScanningSupported } from "./qr-scan.js";
-import { loadPxPerMeter, isCalibrated, initCalibration } from "./calibration.js";
+import { loadPxPerMeter, isCalibrated, pxPerMeterSource, initCalibration } from "./calibration.js";
 
 const PROFILE_STORAGE_KEY = "cardboardViewer.profile";
 
@@ -48,7 +48,10 @@ function renderProfileReadout() {
 }
 
 function renderCalibSummary() {
-  calibReadoutSummary.textContent = `${Math.round(pxPerMeter)} device px/meter`;
+  const source = pxPerMeterSource();
+  const sourceLabel =
+    source === "calibrated" ? "your calibration" : source === "known-device" ? "known-device auto-detect" : "generic default";
+  calibReadoutSummary.textContent = `${Math.round(pxPerMeter)} device px/meter (${sourceLabel})`;
 }
 
 async function loadScenes() {
