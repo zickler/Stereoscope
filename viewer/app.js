@@ -123,6 +123,12 @@ function requestRedraw() {
 
 window.addEventListener("resize", requestRedraw);
 window.addEventListener("orientationchange", requestRedraw);
+// visualViewport fires when mobile browser chrome (address bar, etc.) shows/hides, which
+// changes the visible viewport size without a matching "resize" event in some browsers --
+// without this, the canvas can end up sized for a viewport that no longer matches reality.
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", requestRedraw);
+}
 
 el("exit-vr-btn").addEventListener("click", exitVr);
 el("settings-btn").addEventListener("click", () => {
