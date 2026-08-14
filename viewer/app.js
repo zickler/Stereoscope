@@ -1,4 +1,4 @@
-import { DEFAULT_PROFILE, parseCardboardProfileText, UnresolvedLinkError } from "./cardboard-profile.js";
+import { DEFAULT_PROFILE, resolveCardboardProfileText, UnresolvedLinkError } from "./cardboard-profile.js";
 import { GlViewer } from "./gl-viewer.js";
 import { QrScanner, qrScanningSupported } from "./qr-scan.js";
 import { loadPxPerMeter, isCalibrated, pxPerMeterSource, initCalibration } from "./calibration.js";
@@ -194,12 +194,14 @@ function renderParseError(statusEl, err) {
   }
 }
 
-el("manual-qr-apply").addEventListener("click", () => {
+el("manual-qr-apply").addEventListener("click", async () => {
   const text = el("manual-qr-input").value;
   const status = el("manual-qr-status");
   status.classList.remove("qr-status--error");
+  status.textContent = "Resolving…";
   try {
-    saveProfile(parseCardboardProfileText(text));
+    const p = await resolveCardboardProfileText(text);
+    saveProfile(p);
     requestRedraw();
     status.textContent = "";
   } catch (err) {
@@ -236,7 +238,8 @@ el("scan-qr-btn").addEventListener("click", async () => {
     await scanner.start();
     setQrStatus("Scanning…", null);
     const text = await scanner.scanOnce();
-    const scanned = parseCardboardProfileText(text);
+    setQrStatus("Resolving…", null);
+    const scanned = await resolveCardboardProfileText(text);
     saveProfile(scanned);
     requestRedraw();
     setQrStatus(`✓ Scanned "${scanned.vendor} ${scanned.model}"`, "success");

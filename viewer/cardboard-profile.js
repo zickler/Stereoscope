@@ -230,3 +230,33 @@ export function parseCardboardProfileText(text) {
   const bytes = base64UrlToBytes(param);
   return decodeDeviceParams(bytes);
 }
+
+// Small Cloudflare Worker (see cloudflare_worker.js at the repo root) that follows a
+// shortener redirect chain server-side, where this page's own fetch() would be blocked by
+// CORS, and returns the last hop that still carries a query string (some chains, notably
+// Google's own goo.gl -> cardboard/cfg -> arvr.google.com chain, end on a landing page that
+// strips it). Only resolves hosts on the Worker's own allowlist (common URL shorteners) --
+// it's not a general-purpose proxy.
+const SHORT_LINK_RESOLVER_URL = "https://cardboard-resolver.zickler.workers.dev/";
+
+// Like parseCardboardProfileText, but falls back to the resolver above for a short link
+// that isn't already in KNOWN_SHORT_LINKS, instead of immediately giving up with
+// UnresolvedLinkError. If the resolver call itself fails for any reason (network error,
+// host not on its allowlist, etc.), re-throws the *original* UnresolvedLinkError so the
+// existing "open this link yourself" UI fallback still works.
+export async function resolveCardboardProfileText(text) {
+  try {
+    return parseCardboardProfileText(text);
+  } catch (err) {
+    if (!(err instanceof UnresolvedLinkError)) throw err;
+    try {
+      const res = await fetch(`${SHORT_LINK_RESOLVER_URL}?url=${encodeURIComponent(err.url)}`);
+      if (!res.ok) throw new Error(`resolver returned HTTP ${res.status}`);
+      const resolved = await res.json();
+      if (resolved.error) throw new Error(resolved.error);
+      return parseCardboardProfileText(resolved.bestUrl);
+    } catch {
+      throw err;
+    }
+  }
+}
