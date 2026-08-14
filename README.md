@@ -1,4 +1,4 @@
-# Cardboard Stereoscope
+# Simple Stereoscope
 
 A web-based viewer for viewing perceptual-stereopsis stimuli through any
 Google-Cardboard-compatible viewer, inspired by
