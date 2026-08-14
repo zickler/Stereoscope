@@ -56,9 +56,13 @@ at all.
   three files per scene are kept here; ground-truth disparity/segmentation
   data and vector `.svg` versions stay in the source research repo and
   aren't needed by the viewer.
-- `generate_perceptual_stereo.py` / `build_manifest.py` — copied in from the
-  source research repo. `build_manifest.py` scans `*_outputs/` directories
-  and (re)writes `viewer/scenes.json`.
+- `stereo_generator/` — a copy of the stimulus generator that produces the
+  `<scene>_outputs/` images (see `stereo_generator/README.md` for what it
+  generates, the full CLI reference, and how to add a new scene). This repo
+  only hosts its output; the generator itself lives in the source research
+  repo, and this copy is kept in sync manually.
+- `build_manifest.py` — copied in from the source research repo. Scans
+  `*_outputs/` directories and (re)writes `viewer/scenes.json`.
 - `cloudflare_worker.js` — source of truth for the deployed Worker (see
   above). Cloudflare's dashboard editor doesn't pull from git, so if you
   change this file, paste the new contents into the Worker's online editor
