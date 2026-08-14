@@ -102,7 +102,13 @@ html, body {
   color: var(--fg);
 }
 
-#qr-video { width: 100%; border-radius: 10px; background: black; }
+#qr-video { width: 100%; border-radius: 10px; background: black; transition: box-shadow 0.2s; }
+
+#qr-status { font-size: 1.05rem; font-weight: 600; min-height: 1.4em; }
+.qr-status--success { color: #4ade80; }
+.qr-status--error { color: #f87171; }
+#qr-video.qr-video--success { box-shadow: 0 0 0 4px #4ade80; }
+#qr-video.qr-video--error { box-shadow: 0 0 0 4px #f87171; }
 
 .calib-track {
   position: relative;

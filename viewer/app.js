@@ -148,6 +148,19 @@ el("manual-qr-apply").addEventListener("click", () => {
 });
 
 let scanner = null;
+
+function setQrStatus(text, variant) {
+  const status = el("qr-status");
+  const video = el("qr-video");
+  status.textContent = text;
+  status.classList.remove("qr-status--success", "qr-status--error");
+  video.classList.remove("qr-video--success", "qr-video--error");
+  if (variant) {
+    status.classList.add(`qr-status--${variant}`);
+    video.classList.add(`qr-video--${variant}`);
+  }
+}
+
 el("scan-qr-btn").addEventListener("click", async () => {
   if (!qrScanningSupported()) {
     alert("Camera access isn't available in this browser; use 'Paste QR URL manually' instead.");
@@ -155,17 +168,19 @@ el("scan-qr-btn").addEventListener("click", async () => {
   }
   settingsPanel.hidden = true;
   qrScanView.hidden = false;
-  const status = el("qr-status");
-  status.textContent = "Starting camera…";
+  setQrStatus("Starting camera…", null);
   scanner = new QrScanner(el("qr-video"));
   try {
     await scanner.start();
-    status.textContent = "Scanning…";
+    setQrStatus("Scanning…", null);
     const text = await scanner.scanOnce();
-    saveProfile(parseCardboardProfileText(text));
+    const scanned = parseCardboardProfileText(text);
+    saveProfile(scanned);
     requestRedraw();
+    setQrStatus(`✓ Scanned "${scanned.vendor} ${scanned.model}"`, "success");
+    await new Promise((r) => setTimeout(r, 1800));
   } catch (err) {
-    status.textContent = `Scan failed: ${err.message}`;
+    setQrStatus(`✕ Scan failed: ${err.message}`, "error");
     await new Promise((r) => setTimeout(r, 1500));
   } finally {
     scanner.stop();
