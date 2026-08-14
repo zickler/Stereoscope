@@ -149,9 +149,49 @@ function tryParseUrl(text) {
 // client-side redirect to a query-string-free landing page before a human can copy anything.
 // A physical product's QR code never changes, so each entry here is permanently valid once
 // captured. Add new entries as: '<the exact scanned URL>': '<the resolved p= payload>'.
+//
+// This batch covers every viewer QR code listed at
+// https://homido.com/en/les-principaux-qr-codes-pour-masques-vr-mobiles/ as of 2026-08, each
+// resolved and decoded once to confirm the payload is sane before caching it.
+//
+// NOTE on accuracy: cross-checking against a real physical Homido Mini unit found its own
+// QR-encoded distortion/screen-to-lens constants render noticeably worse (through the actual
+// lenses) than the generic Cardboard v1 DEFAULT_PROFILE. Manufacturer-published constants
+// aren't guaranteed accurate -- if a profile looks wrong once scanned, try "Reset to default
+// profile" before assuming the app is at fault.
 const KNOWN_SHORT_LINKS = {
-  "https://goo.gl/GvHq4R": // Homido Mini
+  "https://goo.gl/GvHq4R": // Homido Mini -- see accuracy note above
     "CgZIT01JRE8SC0hvbWlkbyBtaW5pHYcWWT0ltvN9PSoQAABIQgAASEIAAEhCAABIQlgCNSlcDz06CI_C9T3NzMw9UABgAg",
+  "https://goo.gl/6kjKrQ": // Homido ("VRStream"/"Homido")
+    "CghWUlN0cmVhbRIGSG9taWRvHVg5ND0lj8J1PVgANbbz_Tw6CM3MTD6PwvU9UABgAA",
+  "https://goo.gl/RvfCln": // Homido Grab ("HOMIDO"/"GRAB")
+    "CgZIT01JRE8SBEdSQUIdCtcjPSWPwnU9KhAAAEhCAABIQgAASEIAAEhCWAE1KVwPPToIexSuPs3MzD1QAGAD",
+  "https://goo.gl/cfliQY": // Homido V2
+    "CgZIb21pZG8SCUhvbWlkbyBWMh2WQws9JbbzfT0qEAAASEIAAEhCAABIQgAASEJYATUpXA89Oghcj0I-CtejPVAAYAI",
+  "https://goo.gl/tpw3Mc": // Homido Prime ("Homido"/"V3-62")
+    "CghIb21pZG_CrhIFVjMtNjIdokU2PSW28309KhAAADRCAAA0QgAANEIAADRCWAA1KVwPPToIuB4FPs3MzD5QAGAC",
+  "https://goo.gl/q5nR6m": // Archos VR / Colorcross (decodes as vendor "Rady")
+    "CgRSYWR5EgRSYWR5HcP1KD4lzczMPSoQAABIQgAASEIAAEhCAABIQlgBNSlcDz06CArXIzwK1yM8UAFgAA",
+  "https://goo.gl/Rw4kwC": // "Cardboard Official V1" ("Unofficial Cardboard Inc."/"The Classic")
+    "ChlVbm9mZmljaWFsIENhcmRib2FyZCBJbmMuEgtUaGUgQ2xhc3NpYx3sUTg9JY_CdT0qEAAASEIAAEhCAABIQgAASEJYADVQjRc9OggAAAAAAAAAAFABYAE",
+  "https://goo.gl/viHg5c": // "Cardboard Official V2" (decodes as vendor "VR Stream"/"Homido")
+    "CglWUiBTdHJlYW0SBkhvbWlkbx1YOTQ9JY_CdT0qEAAASEIAAEhCAABIQgAASEJYATUpXA89OgjNzEw-zczMPVAAYAI",
+  "https://goo.gl/t9yhyz": // "Cardboard DOMO" / "I am Cardboard V2" / "VR Box" (all the same link)
+    "CgtWUlN0cmVhbS5mchIUQ2FyZGJvYXJkIFYyIG9mZmljZWwdd74fPSVvEoM9KhAAAEhCAABIQgAASEIAAEhCWAA1KVwPPToIexSuPs3MDD9QAGAD",
+  "https://goo.gl/IN9uDu": // Freefly VR
+    "CgtWUlN0cmVhbS5mchIKRnJlZUZseSBWUh0K1yM9JWiRbT0qEAAASEIAAEhCAABIQgAASEJYATUpXA89Ogh7FK4-CtejPVAAYAI",
+  "https://goo.gl/zZbJU3": // I am Cardboard Giant
+    "Cg5JIEFNIENhcmRib2FyZBIbSUFDIEdpYW50IENhcmRib2FyZCBIZWFkc2V0HX9qPD0lbxKDPSoQAABIQgAASEIAAEhCAABIQlgANVg5ND06CHE9ij5xPYo-UAFgAQ",
+  "https://goo.gl/EzHx9W": // Merge VR
+    "CgtWUlN0cmVhbS5mchIITWVyZ2UgVlIdAisHPSUj23k9KhAAAEhCAABIQgAASEIAAEhCWAA1KVwPPToIrkdhPo_C9bxQAGAC",
+  "https://goo.gl/m6sseN": // One Plus Cardboard
+    "CgdPbmVQbHVzEhVDYXJkYm9hcmQgVmlld2VyIHYxLjEdKVwPPSWPwnU9KhAAAEhCAABIQgAASEIAAEhCWAA1KVwPPToIAAAAAAAAAABQAGAD",
+  "https://goo.gl/4amlp5": // VR Shinecon / KiX (decodes as vendor "Adaptive Designs"/"VRKiX")
+    "ChBBZGFwdGl2ZSBEZXNpZ25zEgVWUktpWB228_08Jc3MTD0qEAAASEIAAEhCAABIQgAASEJYADUpXA89OggK1yM8CtcjvFAAYAA",
+  "https://goo.gl/R1YBVa": // Wearality Sky
+    "CglXZWFyYWxpdHkSEVdlYXJhbGl0eSBTa3kgMC4xHY_C9TwlAiuHPSoQAACWQgAAlkIAAJZCAACWQlgBNSlcDz06CI_C9T2amRk-UABgAg",
+  "https://goo.gl/vvTUK3": // Zeiss VR One / VR One GX ("Carl Zeiss AG"/"VR ONE")
+    "Cg1DYXJsIFplaXNzIEFHEgZWUiBPTkUdUI0XPSW28309KhAAAEhCAABIQgAASEIAAEhCWAE1KVwPPToIzczMPQAAgD9QAGAA",
 };
 
 // Some viewer manufacturers (e.g. Homido) print a QR code that encodes a shortened link
