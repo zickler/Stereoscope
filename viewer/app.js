@@ -108,14 +108,15 @@ async function enterVrNow(scene) {
   viewer.setEyeImage("left", leftImg, meta);
   viewer.setEyeImage("right", rightImg, meta);
   requestRedraw();
+  requestRedrawSoon(); // in case the phone is still mid-rotation into the headset right now
 
   if (canvas.requestFullscreen) {
-    canvas.requestFullscreen().catch(() => {});
+    canvas.requestFullscreen().then(requestRedrawSoon).catch(() => {});
   } else if (canvas.webkitRequestFullscreen) {
     canvas.webkitRequestFullscreen();
   }
   if (screen.orientation && screen.orientation.lock) {
-    screen.orientation.lock("landscape").catch(() => {});
+    screen.orientation.lock("landscape").then(requestRedrawSoon).catch(() => {});
   }
 }
 
@@ -135,13 +136,26 @@ function requestRedraw() {
   });
 }
 
-window.addEventListener("resize", requestRedraw);
-window.addEventListener("orientationchange", requestRedraw);
+// iOS Safari (and some other mobile browsers) fire "resize"/"orientationchange" with STALE
+// window.innerWidth/innerHeight -- the values only settle a little later, after the browser
+// chrome/layout transition actually finishes. Re-measuring immediately can capture a canvas
+// size from the orientation the phone was just IN, not the one it's rotating INTO, which is
+// enough on its own to make the eye split look badly wrong. Redraw once immediately for
+// responsiveness, then again after a short settle delay to correct for that.
+function requestRedrawSoon() {
+  requestRedraw();
+  setTimeout(requestRedraw, 250);
+}
+
+window.addEventListener("resize", requestRedrawSoon);
+window.addEventListener("orientationchange", requestRedrawSoon);
+document.addEventListener("fullscreenchange", requestRedrawSoon);
+document.addEventListener("webkitfullscreenchange", requestRedrawSoon);
 // visualViewport fires when mobile browser chrome (address bar, etc.) shows/hides, which
 // changes the visible viewport size without a matching "resize" event in some browsers --
 // without this, the canvas can end up sized for a viewport that no longer matches reality.
 if (window.visualViewport) {
-  window.visualViewport.addEventListener("resize", requestRedraw);
+  window.visualViewport.addEventListener("resize", requestRedrawSoon);
 }
 
 el("exit-vr-btn").addEventListener("click", exitVr);
