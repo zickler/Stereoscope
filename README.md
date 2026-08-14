@@ -1,8 +1,8 @@
-# Cardboard Stereoscope
+# Simple Stereoscope
 
-A web-based viewer for viewing perceptual-stereopsis stimuli through any
-Google-Cardboard-compatible viewer, inspired by
-[vision.seas.harvard.edu/stereoscope](https://vision.seas.harvard.edu/stereoscope/).
+A web-based viewer for experiencing perceptual stereo stimuli through any
+Google-Cardboard-compatible viewer, inspired by the old
+[Harvard VR stereoscope](https://vision.seas.harvard.edu/stereoscope/).
 Live at: https://zickler.github.io/Stereoscope/viewer/
 
 Unlike a flat side-by-side viewer, this scans your specific Cardboard-style
