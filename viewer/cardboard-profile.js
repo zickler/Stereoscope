@@ -121,20 +121,6 @@ function base64UrlToBytes(param) {
   return bytes;
 }
 
-// Some viewer manufacturers (e.g. Homido) print a QR code that encodes a shortened link
-// (goo.gl/xxxxx) which itself redirects to the real .../cardboard/cfg?p=... URL, rather than
-// encoding that URL directly. A page hosted on GitHub Pages can't follow that redirect itself
-// (the browser's fetch() is blocked by CORS — google.com doesn't grant this origin permission
-// to read the response), so this is surfaced as a distinct error the UI can offer a real,
-// user-driven fix for: open the link in a normal browser tab (which isn't subject to CORS)
-// and paste back whatever URL it lands on.
-export class UnresolvedLinkError extends Error {
-  constructor(url) {
-    super(`"${url}" looks like a link but has no cardboard config in it — it may need to be opened first`);
-    this.url = url;
-  }
-}
-
 // Matches a bare "hostname.tld/..." with no scheme, e.g. "goo.gl/GvHq4R". Deliberately
 // requires a dot before the first path/query separator: base64url payloads (this function's
 // other candidate interpretation) use the alphabet [A-Za-z0-9_-], which never contains ".",
@@ -156,6 +142,31 @@ function tryParseUrl(text) {
   }
 }
 
+// Cache of short links already resolved by hand (e.g. via `curl -sIL <url>`) to their real
+// cardboard/cfg?p=... payload, for viewer QR codes that encode a shortener link this page has
+// no way to resolve itself at runtime (see UnresolvedLinkError below) -- following the redirect
+// with a real browser tab doesn't work either, since google.com/cardboard/cfg itself does a
+// client-side redirect to a query-string-free landing page before a human can copy anything.
+// A physical product's QR code never changes, so each entry here is permanently valid once
+// captured. Add new entries as: '<the exact scanned URL>': '<the resolved p= payload>'.
+const KNOWN_SHORT_LINKS = {
+  "https://goo.gl/GvHq4R": // Homido Mini
+    "CgZIT01JRE8SC0hvbWlkbyBtaW5pHYcWWT0ltvN9PSoQAABIQgAASEIAAEhCAABIQlgCNSlcDz06CI_C9T3NzMw9UABgAg",
+};
+
+// Some viewer manufacturers (e.g. Homido) print a QR code that encodes a shortened link
+// (goo.gl/xxxxx) which itself redirects to the real .../cardboard/cfg?p=... URL, rather than
+// encoding that URL directly. A page hosted on GitHub Pages can't follow that redirect itself
+// (the browser's fetch() is blocked by CORS — google.com doesn't grant this origin permission
+// to read the response), so unless it's a link already cached in KNOWN_SHORT_LINKS above, this
+// is surfaced as a distinct error carrying the URL so the UI can point the user at it.
+export class UnresolvedLinkError extends Error {
+  constructor(url) {
+    super(`"${url}" looks like a link but has no cardboard config in it — it may need to be opened first`);
+    this.url = url;
+  }
+}
+
 // Accepts a full scanned QR URL (http(s)://google.com/cardboard/cfg?p=..., the newer
 // https://arvr.google.com/cardboard/... form, or a bare "google.com/cardboard/cfg?p=..." with
 // no scheme), or a bare base64 `p` payload.
@@ -168,7 +179,12 @@ export function parseCardboardProfileText(text) {
     if (p) {
       param = p;
     } else {
-      throw new UnresolvedLinkError(url.toString());
+      const known = KNOWN_SHORT_LINKS[url.toString()];
+      if (known) {
+        param = known;
+      } else {
+        throw new UnresolvedLinkError(url.toString());
+      }
     }
   }
   const bytes = base64UrlToBytes(param);

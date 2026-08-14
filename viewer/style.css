@@ -100,6 +100,11 @@ html, body {
   border: 1px solid #444;
   background: #0d0f14;
   color: var(--fg);
+  pointer-events: auto;
+  -webkit-user-select: text;
+  user-select: text;
+  position: relative;
+  z-index: 1;
 }
 
 #qr-video { width: 100%; border-radius: 10px; background: black; transition: box-shadow 0.2s; }

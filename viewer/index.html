@@ -32,12 +32,10 @@
     <p id="profile-readout" class="mono"></p>
     <button id="scan-qr-btn">Scan viewer's QR code</button>
     <button id="reset-profile-btn">Reset to default profile</button>
-    <details>
-      <summary>Paste QR URL / base64 manually</summary>
-      <input id="manual-qr-input" type="text" placeholder="https://google.com/cardboard/cfg?p=...">
-      <button id="manual-qr-apply">Apply</button>
-      <p id="manual-qr-status" class="hint"></p>
-    </details>
+    <h4>Paste QR URL / base64 manually</h4>
+    <input id="manual-qr-input" type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://google.com/cardboard/cfg?p=...">
+    <button id="manual-qr-apply">Apply</button>
+    <p id="manual-qr-status" class="hint"></p>
   </section>
   <section>
     <h3>Display calibration</h3>
