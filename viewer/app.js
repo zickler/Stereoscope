@@ -1,7 +1,7 @@
 import { DEFAULT_PROFILE, parseCardboardProfileText, UnresolvedLinkError } from "./cardboard-profile.js";
 import { GlViewer } from "./gl-viewer.js";
 import { QrScanner, qrScanningSupported } from "./qr-scan.js";
-import { loadPxPerMeter, initCalibration } from "./calibration.js";
+import { loadPxPerMeter, isCalibrated, initCalibration } from "./calibration.js";
 
 const PROFILE_STORAGE_KEY = "cardboardViewer.profile";
 
@@ -21,6 +21,7 @@ let scenes = [];
 let viewer = null;
 let currentScene = null;
 let rafPending = false;
+let pendingScene = null;
 
 function loadProfile() {
   try {
@@ -81,6 +82,19 @@ function loadImage(url) {
 }
 
 async function enterVr(scene) {
+  // An uncalibrated device falls back to a guessed px/meter that can be wildly off for the
+  // actual phone -- through real magnifying lenses even a modest mismatch there is enough to
+  // make the two eye views fail to fuse ("overlapping", clipped off-screen). Require
+  // calibration before the first VR view rather than silently rendering with that guess.
+  if (!isCalibrated()) {
+    pendingScene = scene;
+    calibController.show();
+    return;
+  }
+  await enterVrNow(scene);
+}
+
+async function enterVrNow(scene) {
   currentScene = scene;
   vrView.hidden = false;
   document.getElementById("gallery-view").hidden = true;
@@ -237,9 +251,15 @@ el("qr-cancel-btn").addEventListener("click", () => {
 const calibController = initCalibration(calibrationView, (newPxPerMeter) => {
   pxPerMeter = newPxPerMeter;
   calibController.hide();
-  settingsPanel.hidden = false;
   renderCalibSummary();
-  requestRedraw();
+  if (pendingScene) {
+    const scene = pendingScene;
+    pendingScene = null;
+    enterVrNow(scene);
+  } else {
+    settingsPanel.hidden = false;
+    requestRedraw();
+  }
 });
 el("recalibrate-btn").addEventListener("click", () => {
   settingsPanel.hidden = true;
