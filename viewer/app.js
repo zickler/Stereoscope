@@ -47,10 +47,15 @@ function renderProfileReadout() {
     `distortion [${profile.distortionCoefficients.map((v) => v.toFixed(3)).join(", ")}]`;
 }
 
+const CALIB_SOURCE_LABELS = {
+  calibrated: "your calibration",
+  "known-device-exact": "known-device auto-detect",
+  "known-device-approximate": "known-device auto-detect, approximate — recalibrating recommended",
+  default: "generic default",
+};
+
 function renderCalibSummary() {
-  const source = pxPerMeterSource();
-  const sourceLabel =
-    source === "calibrated" ? "your calibration" : source === "known-device" ? "known-device auto-detect" : "generic default";
+  const sourceLabel = CALIB_SOURCE_LABELS[pxPerMeterSource()];
   calibReadoutSummary.textContent = `${Math.round(pxPerMeter)} device px/meter (${sourceLabel})`;
 }
 

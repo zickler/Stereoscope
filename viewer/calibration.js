@@ -27,33 +27,63 @@ const KNOWN_IPHONE_PPI = [
   [430, 932, 3, 460], // iPhone 14 Pro Max/15 Pro Max/15 Plus
 ];
 
-function guessPxPerMeterFromKnownDevice() {
+// Best-effort auto-detection for Android: UNLIKE iPhones, Android's devicePixelRatio is
+// rounded to a coarse density "bucket" rather than reflecting true density, and CSS
+// dimensions/dpr can also change if the user adjusts system display-scaling settings (common
+// on Android, rare on iOS). Concretely verified collisions: Pixel 6 (411ppi), 7 (416ppi), and
+// 8 (428ppi) all report the IDENTICAL [412, 915, 2.625] signature; Galaxy S23 (422ppi) and S24
+// (416ppi) both report [360, 780, 3]. So a match here is a *cluster* of models/generations
+// spanning a real ppi range, not a precise identification -- each entry's ppi is the middle of
+// that observed range. This is deliberately treated as lower-confidence than the iPhone table:
+// it improves the pre-calibration default guess, but does NOT count as "calibrated" (see
+// isCalibrated below) -- Android users still get the accurate credit-card calibration flow.
+const KNOWN_ANDROID_PPI = [
+  [412, 915, 2.625, 418], // Google Pixel 6/7/8 (verified range 411-428ppi)
+  [360, 808, 3, 422], // Google Pixel 9
+  [360, 780, 3, 419], // Samsung Galaxy S21/S22/S23/S24 compact tier (verified range 415-423ppi)
+  [384, 854, 3.75, 515], // Samsung Galaxy S21 Ultra (and likely S22/S23 Ultra -- same tier, unverified)
+];
+
+function findMatch(table) {
   const dpr = window.devicePixelRatio || 1;
   const w = Math.min(window.screen.width, window.screen.height);
   const h = Math.max(window.screen.width, window.screen.height);
-  const match = KNOWN_IPHONE_PPI.find(([mw, mh, mdpr]) => mw === w && mh === h && mdpr === dpr);
+  const match = table.find(([mw, mh, mdpr]) => mw === w && mh === h && mdpr === dpr);
   return match ? match[3] / 0.0254 : null;
+}
+
+function guessExactPxPerMeter() {
+  return findMatch(KNOWN_IPHONE_PPI);
+}
+
+function guessApproxPxPerMeter() {
+  return findMatch(KNOWN_ANDROID_PPI);
 }
 
 export function loadPxPerMeter() {
   const stored = Number(localStorage.getItem(STORAGE_KEY));
   if (Number.isFinite(stored) && stored > 0) return stored;
-  return guessPxPerMeterFromKnownDevice() || DEFAULT_PX_PER_METER;
+  return guessExactPxPerMeter() || guessApproxPxPerMeter() || DEFAULT_PX_PER_METER;
 }
 
 export function savePxPerMeter(value) {
   localStorage.setItem(STORAGE_KEY, String(value));
 }
 
+// Only an explicit calibration or an exact (iPhone) device match are trusted enough to skip
+// the mandatory calibration gate before first VR entry -- an approximate (Android) match is
+// not, since a wrong guess there is still common enough to produce the "overlapping, off
+// screen" failure mode real calibration exists to prevent.
 export function isCalibrated() {
-  return localStorage.getItem(STORAGE_KEY) !== null || guessPxPerMeterFromKnownDevice() !== null;
+  return localStorage.getItem(STORAGE_KEY) !== null || guessExactPxPerMeter() !== null;
 }
 
 // For the Settings readout, so the user can tell whether the current px/meter came from their
-// own calibration, an auto-detected known device, or the generic (least accurate) fallback.
+// own calibration, an exact device match, an approximate one, or the generic fallback.
 export function pxPerMeterSource() {
   if (localStorage.getItem(STORAGE_KEY) !== null) return "calibrated";
-  if (guessPxPerMeterFromKnownDevice() !== null) return "known-device";
+  if (guessExactPxPerMeter() !== null) return "known-device-exact";
+  if (guessApproxPxPerMeter() !== null) return "known-device-approximate";
   return "default";
 }
 
