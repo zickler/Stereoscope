@@ -141,5 +141,18 @@
     "cy": 255.5,
     "width": 512,
     "height": 512
+  },
+  {
+    "id": "svg_square",
+    "title": "svg square",
+    "source": "Custom scene: SVG-textured square in front of an SVG-textured background",
+    "thumbnail": "../svg_square_outputs/svg_square_cyclopean.png",
+    "leftImage": "../svg_square_outputs/svg_square_left.png",
+    "rightImage": "../svg_square_outputs/svg_square_right.png",
+    "focalPx": 300.0,
+    "cx": 255.5,
+    "cy": 255.5,
+    "width": 512,
+    "height": 512
   }
 ]
