@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Cardboard Stereoscope</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<link rel="manifest" href="app.webmanifest">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header id="gallery-view">
+  <h1>Cardboard Stereoscope</h1>
+  <p class="hint">Perceptual-stereopsis stimuli from this repo, viewable through any
+    Google-Cardboard-compatible viewer. Pick a scene, then <strong>Enter VR</strong>.</p>
+  <button id="settings-btn" class="icon-btn" aria-label="Settings">⚙</button>
+  <div id="gallery" class="gallery"></div>
+</header>
+
+<div id="vr-view" hidden>
+  <canvas id="gl-canvas"></canvas>
+  <button id="exit-vr-btn" class="icon-btn overlay-btn">✕</button>
+</div>
+
+<div id="settings-panel" class="panel" hidden>
+  <h2>Settings</h2>
+  <section>
+    <h3>Viewer profile</h3>
+    <p id="profile-readout" class="mono"></p>
+    <button id="scan-qr-btn">Scan viewer's QR code</button>
+    <button id="reset-profile-btn">Reset to default profile</button>
+    <details>
+      <summary>Paste QR URL / base64 manually</summary>
+      <input id="manual-qr-input" type="text" placeholder="https://google.com/cardboard/cfg?p=...">
+      <button id="manual-qr-apply">Apply</button>
+    </details>
+  </section>
+  <section>
+    <h3>Display calibration</h3>
+    <p id="calib-readout-summary" class="mono"></p>
+    <button id="recalibrate-btn">Recalibrate display</button>
+  </section>
+  <button id="close-settings-btn">Close</button>
+</div>
+
+<div id="qr-scan-view" class="panel" hidden>
+  <h2>Point the camera at the viewer's QR code</h2>
+  <video id="qr-video" autoplay playsinline muted></video>
+  <p id="qr-status" class="hint"></p>
+  <button id="qr-cancel-btn">Cancel</button>
+</div>
+
+<div id="calibration-view" class="panel" hidden>
+  <h2>Hold a card (credit card / license) against the screen</h2>
+  <p class="hint">Drag the two bars until the gap between them exactly matches the card's width.</p>
+  <div class="calib-track">
+    <div class="calib-bar calib-left"></div>
+    <div class="calib-bar calib-right"></div>
+  </div>
+  <p class="calib-readout mono"></p>
+  <button class="calib-confirm">Done</button>
+</div>
+
+<script src="vendor/jsQR.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
