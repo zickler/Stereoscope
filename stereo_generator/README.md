@@ -54,14 +54,20 @@ exactly one `<stem>`. **`andersonnakayama1994_wallpaper` is ambiguous between tw
 depth interpretations of the exact same raw display** — "front" (wallpaper
 nearer, occludes surround) and "behind" (wallpaper farther, seen through the
 surround's aperture) — so there is no single "correct" ground-truth disparity
-to pick, and both are always written. Because the two interpretations render
-identically (same images, segmentation, and UDF — only the disparity value
-assigned to the wallpaper region differs), only `<stem>_front_disp.npy` /
-`<stem>_front_disp_left.npy` and `<stem>_behind_disp.npy` /
-`<stem>_behind_disp_left.npy` are duplicated per interpretation; every other
-file (images, `_seg.npy`, `_udf.npy`/`_udf_preview`, `_summary.svg`) is written
-once under the plain `<stem>`, and `<stem>_meta.json` records both
-interpretations' `wallpaper_z`/`wallpaper_disparity_px` under a nested
+to pick, and both are always written. The two interpretations render
+identically (same images — this really is one raw display, not two), so
+those (and `_summary.svg`) are written once under the plain `<stem>`. But
+per Anderson & Nakayama's own Figure 4 half-occlusion analysis, the two
+interpretations disagree about which surface owns the border stripe on each
+side of the patch: "front" treats it as a half-occlusion revealing the
+farther surround (so the patch reads one stripe width narrower on each
+side), while "behind" keeps the full patch width. That makes disparity,
+segmentation, and the UDF derived from it all genuinely percept-dependent,
+so `<stem>_front_disp.npy` / `_disp_left.npy` / `_seg.npy` / `_udf.npy` /
+`_udf_preview.svg` / `_udf_preview.png` and their `<stem>_behind_*`
+counterparts are each written separately per interpretation, while
+`<stem>_meta.json` records both interpretations' `wallpaper_z` /
+`wallpaper_disparity_px` / `disparity_region_cyclopean_px` under a nested
 `"variants"` key. Its default output-dir/stem also splice in the
 surround-luminance preset (see below), so different luminance runs never
 collide.
@@ -100,8 +106,8 @@ done
 
 This writes four output directories (`andersonnakayama1994_wallpaper_dark_outputs`,
 `..._mid_dark_outputs`, `..._mid_light_outputs`, `..._light_outputs`), each
-containing one shared set of images/segmentation/UDF/summary plus a
-`_front`/`_behind` pair of disparity maps (see "Output files" above).
+containing one shared set of images/summary plus a `_front`/`_behind` pair
+of disparity/segmentation/UDF files (see "Output files" above).
 
 ### SVG-Square (custom)
 

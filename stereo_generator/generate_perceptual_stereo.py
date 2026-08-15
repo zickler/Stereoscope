@@ -378,10 +378,14 @@ def output_paths(out_root: str, stem: str) -> Dict[str, str]:
 def shared_variant_output_paths(
     out_root: str, stem: str, variant_keys: Sequence[str]
 ) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
-    """Like output_paths, but for SceneSpec.variants_share_rendering families: every key
-    except "disp"/"disp_left" is written once under the plain stem (no per-variant suffix),
-    since rendering is identical across variants by construction. Only disparity genuinely
-    differs per variant, so it gets its own path per variant key instead.
+    """Like output_paths, but for SceneSpec.variants_share_rendering families: keys that are
+    genuinely identical across variants (the rendered images, plus the merged metadata and
+    summary sheet) are written once under the plain stem. Keys that encode which surface a
+    pixel belongs to -- disp/disp_left, seg, and the UDF (derived from seg's boundary) -- get
+    their own path per variant key instead, since for this scene family the wallpaper's true
+    ground-truth extent differs by percept (see _wallpaper_patch_disparity_bounds): the
+    rendered aperture is the same in both, but "front" reassigns its border stripe on each side
+    to the surround, one stripe width narrower than "behind".
     """
     shared = {
         "cyclopean": os.path.join(out_root, f"{stem}_cyclopean.svg"),
@@ -394,21 +398,21 @@ def shared_variant_output_paths(
         "right_png": os.path.join(out_root, f"{stem}_right.png"),
         "crossed_png": os.path.join(out_root, f"{stem}_crossed.png"),
         "parallel_png": os.path.join(out_root, f"{stem}_parallel.png"),
-        "seg": os.path.join(out_root, f"{stem}_seg.npy"),
-        "field": os.path.join(out_root, f"{stem}_udf.npy"),
-        "udf": os.path.join(out_root, f"{stem}_udf_preview.svg"),
-        "udf_png": os.path.join(out_root, f"{stem}_udf_preview.png"),
         "metadata": os.path.join(out_root, f"{stem}_meta.json"),
         "summary": os.path.join(out_root, f"{stem}_summary.svg"),
     }
-    variant_disp = {
+    variant_paths = {
         vk: {
             "disp": os.path.join(out_root, f"{stem}_{vk}_disp.npy"),
             "disp_left": os.path.join(out_root, f"{stem}_{vk}_disp_left.npy"),
+            "seg": os.path.join(out_root, f"{stem}_{vk}_seg.npy"),
+            "field": os.path.join(out_root, f"{stem}_{vk}_udf.npy"),
+            "udf": os.path.join(out_root, f"{stem}_{vk}_udf_preview.svg"),
+            "udf_png": os.path.join(out_root, f"{stem}_{vk}_udf_preview.png"),
         }
         for vk in variant_keys
     }
-    return shared, variant_disp
+    return shared, variant_paths
 
 
 def _format_points(points: Sequence[Point2]) -> str:
@@ -1179,6 +1183,23 @@ def _wallpaper_window_bounds(scene: WallpaperScene, eye: str) -> Tuple[float, fl
     """
     offset = _wallpaper_eye_offset(scene.surround_disparity_px, eye)
     return scene.patch_left_px + offset, scene.patch_right_px + offset
+
+
+def _wallpaper_patch_disparity_bounds(scene: WallpaperScene, eye: str) -> Tuple[float, float]:
+    """The ground-truth extent of the wallpaper SURFACE, as opposed to
+    _wallpaper_window_bounds (the rendered aperture, always the full stripe
+    count). These differ for the 'front' percept per Anderson & Nakayama's
+    Figure 4 half-occlusion analysis: the border stripe on each side is a
+    half-occlusion revealing the farther surround, not part of the near
+    wallpaper, so the true patch is one stripe width narrower on each side
+    than what's rendered there. For 'behind', the wallpaper is the occluded
+    (farther) surface, so its border stripes remain part of it and the patch
+    matches the full rendered window.
+    """
+    window_left, window_right = _wallpaper_window_bounds(scene, eye)
+    if scene.percept == "front":
+        return window_left + scene.stripe_width_px, window_right - scene.stripe_width_px
+    return window_left, window_right
 
 
 def _wallpaper_stripe_bounds_eye(scene: WallpaperScene, eye: str) -> List[float]:
@@ -2058,9 +2079,9 @@ def rasterize_wallpaper_maps(
     if include_segmentation:
         seg = array("B", [WALLPAPER_SURROUND_LABEL]) * n
 
-    window_left, window_right = _wallpaper_window_bounds(scene, eye)
-    xmin = max(0, int(math.floor(window_left)))
-    xmax = min(w, int(math.ceil(window_right)))
+    patch_left, patch_right = _wallpaper_patch_disparity_bounds(scene, eye)
+    xmin = max(0, int(math.floor(patch_left)))
+    xmax = min(w, int(math.ceil(patch_right)))
     ymin = max(0, int(math.floor(scene.patch_top_px)))
     ymax = min(h, int(math.ceil(scene.patch_bottom_px)))
     if xmin < xmax and ymin < ymax:
@@ -3509,21 +3530,23 @@ def write_shared_variant_metadata(
 ) -> None:
     """Metadata writer for SceneSpec.variants_share_rendering families: hoists every field that
     is identical across variants (by construction) into shared top-level blocks, and nests the
-    few fields that genuinely differ per variant (percept, wallpaper_z/disparity) under
+    few fields that genuinely differ per variant (percept, wallpaper_z/disparity, and the
+    ground-truth region that gets that disparity -- see _wallpaper_patch_disparity_bounds) under
     "variants". Currently only WallpaperScene uses this path.
     """
     any_scene = next(iter(variant_scenes.values()))
     if not isinstance(any_scene, WallpaperScene):
         raise TypeError(f"write_shared_variant_metadata: unsupported scene type {type(any_scene)!r}")
 
-    variants = {
-        key: {
+    variants = {}
+    for key, scene in variant_scenes.items():
+        region_left, region_right = _wallpaper_patch_disparity_bounds(scene, "cyclopean")
+        variants[key] = {
             "percept": scene.percept,
             "wallpaper_z": scene.wallpaper_z,
             "wallpaper_disparity_px": scene.wallpaper_disparity_px,
+            "disparity_region_cyclopean_px": {"left": region_left, "right": region_right},
         }
-        for key, scene in variant_scenes.items()
-    }
     data = {
         "camera": {
             "focal_px": rig.focal_px,
@@ -3563,10 +3586,17 @@ def write_shared_variant_metadata(
                 "eyes, which makes the 'front' (wallpaper nearer, occludes surround) and "
                 "'behind' (wallpaper farther, occluded by the surround's aperture) "
                 "interpretations equally valid explanations of the same raw display -- the "
-                "rendered images, segmentation, and UDF above are identical between "
-                "interpretations by construction, so they are written once; only the "
-                "ground-truth disparity differs, and is recorded separately per variant as "
-                f"'{stem}_<variant>_disp.npy' / '{stem}_<variant>_disp_left.npy' (see 'variants' below)."
+                "rendered images above are identical between interpretations by construction, "
+                "so they are written once. Per the paper's Figure 4 half-occlusion analysis, "
+                "though, the two interpretations disagree about which surface owns the border "
+                "stripe on each side: in 'front' it's a half-occlusion revealing the farther "
+                "surround (patch_bounds_cyclopean_px, above, is the rendered aperture; "
+                "disparity_region_cyclopean_px, below, is one stripe width narrower on each "
+                "side for 'front' but matches the full aperture for 'behind'). So disparity, "
+                "segmentation, and the UDF derived from it all differ per variant, recorded "
+                f"separately as '{stem}_<variant>_disp.npy' / '..._disp_left.npy' / "
+                f"'..._seg.npy' / '..._udf.npy' / '..._udf_preview.svg' / '..._udf_preview.png' "
+                "(see 'variants' below)."
             ),
             "variants": variants,
         },
@@ -3579,21 +3609,18 @@ def write_shared_variant_metadata(
 def build_shared_variant_summary_panels(
     input_dir: str, stem: str, variant_keys: Sequence[str],
 ) -> List[Panel]:
-    shared_paths, variant_disp_paths = shared_variant_output_paths(input_dir, stem, variant_keys)
+    shared_paths, variant_paths = shared_variant_output_paths(input_dir, stem, variant_keys)
     expected_keys = (
         "cyclopean", "left", "right", "crossed", "parallel",
         "cyclopean_png", "left_png", "right_png", "crossed_png", "parallel_png",
-        "seg", "field", "udf", "udf_png", "metadata",
+        "metadata",
     )
     missing = [shared_paths[key] for key in expected_keys if not os.path.exists(shared_paths[key])]
     for vk in variant_keys:
-        missing.extend(p for p in variant_disp_paths[vk].values() if not os.path.exists(p))
+        missing.extend(p for p in variant_paths[vk].values() if not os.path.exists(p))
     if missing:
         formatted = "\n  ".join(missing)
         raise FileNotFoundError(f"missing expected output files:\n  {formatted}")
-
-    seg_asset, seg_subtitle = colorize_segmentation(read_npy(shared_paths["seg"]))
-    field_asset, field_subtitle = colorize_float_map(read_npy(shared_paths["field"]), zero_is_background=False)
 
     panels = [
         Panel("Cyclopean image", relative_label(shared_paths["cyclopean"], input_dir), svg_data_uri(shared_paths["cyclopean"])),
@@ -3608,18 +3635,20 @@ def build_shared_variant_summary_panels(
         Panel("Parallel pair PNG", relative_label(shared_paths["parallel_png"], input_dir), png_file_data_uri(shared_paths["parallel_png"])),
     ]
     for vk in variant_keys:
-        disp_paths = variant_disp_paths[vk]
-        disp_asset, disp_subtitle = colorize_float_map(read_npy(disp_paths["disp"]), zero_is_background=True)
-        left_disp_asset, left_disp_subtitle = colorize_float_map(read_npy(disp_paths["disp_left"]), zero_is_background=True)
+        vp = variant_paths[vk]
+        disp_asset, disp_subtitle = colorize_float_map(read_npy(vp["disp"]), zero_is_background=True)
+        left_disp_asset, left_disp_subtitle = colorize_float_map(read_npy(vp["disp_left"]), zero_is_background=True)
+        seg_asset, seg_subtitle = colorize_segmentation(read_npy(vp["seg"]))
+        field_asset, field_subtitle = colorize_float_map(read_npy(vp["field"]), zero_is_background=False)
         panels.append(Panel(f"Cyclopean disparity ({vk})", disp_subtitle, disp_asset))
         panels.append(Panel(f"Left-view disparity ({vk})", left_disp_subtitle, left_disp_asset))
-    panels.extend([
-        Panel("Segmentation map", seg_subtitle, seg_asset),
-        Panel("UDF field", field_subtitle, field_asset),
-        Panel("UDF boundary preview", relative_label(shared_paths["udf"], input_dir), svg_data_uri(shared_paths["udf"])),
-        Panel("UDF preview PNG", relative_label(shared_paths["udf_png"], input_dir), png_file_data_uri(shared_paths["udf_png"])),
-        Panel("Scene metadata", relative_label(shared_paths["metadata"], input_dir), text_lines=load_metadata_lines(shared_paths["metadata"])),
-    ])
+        panels.append(Panel(f"Segmentation map ({vk})", seg_subtitle, seg_asset))
+        panels.append(Panel(f"UDF field ({vk})", field_subtitle, field_asset))
+        panels.append(Panel(f"UDF boundary preview ({vk})", relative_label(vp["udf"], input_dir), svg_data_uri(vp["udf"])))
+        panels.append(Panel(f"UDF preview PNG ({vk})", relative_label(vp["udf_png"], input_dir), png_file_data_uri(vp["udf_png"])))
+    panels.append(
+        Panel("Scene metadata", relative_label(shared_paths["metadata"], input_dir), text_lines=load_metadata_lines(shared_paths["metadata"]))
+    )
     return panels
 
 
@@ -3633,14 +3662,15 @@ def generate_shared_variant_outputs(
     summary_title: str,
 ) -> None:
     """Orchestrator for SceneSpec.variants_share_rendering families: renders every shared output
-    (images, segmentation, UDF, summary) once from an arbitrary representative variant, and only
-    writes ground-truth disparity separately per variant, since that's the one thing that actually
-    differs between interpretations.
+    (the images) once from an arbitrary representative variant, then writes disparity,
+    segmentation, and the UDF separately per variant, since those all encode which surface a
+    pixel belongs to and that assignment genuinely differs between interpretations for this
+    scene family (see _wallpaper_patch_disparity_bounds).
     """
     width, height = rig.width, rig.height
     variant_keys = list(variant_scenes.keys())
     any_scene = next(iter(variant_scenes.values()))
-    shared_paths, variant_disp_paths = shared_variant_output_paths(out_root, stem, variant_keys)
+    shared_paths, variant_paths = shared_variant_output_paths(out_root, stem, variant_keys)
     ensure_output_dir(out_root)
 
     write_scene_svg(
@@ -3683,26 +3713,26 @@ def generate_shared_variant_outputs(
         rig, any_scene, crossed=False, gap=pair_gap, show_plane_outline=args.show_plane_outline,
     )
 
-    _, seg_cyc = rasterize_view(rig, any_scene, "cyclopean", include_segmentation=True)
-    boundary = segmentation_boundary(seg_cyc, width, height)
-    udf = distance_transform_from_boundary(boundary, width, height)
-    udf_preview_rgb = rasterize_boundary_preview_rgb(rig, any_scene, boundary)
-
     write_png(shared_paths["cyclopean_png"], width, height, cyclopean_rgb)
     write_png(shared_paths["left_png"], width, height, left_rgb)
     write_png(shared_paths["right_png"], width, height, right_rgb)
     write_png(shared_paths["crossed_png"], crossed_width, crossed_height, crossed_rgb)
     write_png(shared_paths["parallel_png"], parallel_width, parallel_height, parallel_rgb)
-    write_npy(shared_paths["seg"], seg_cyc, (height, width), "|u1", "B")
-    write_npy(shared_paths["field"], udf, (height, width, 1), "<f4", "f")
-    write_boundary_preview_svg(shared_paths["udf"], rig, any_scene, boundary)
-    write_png(shared_paths["udf_png"], width, height, udf_preview_rgb)
 
     for vk, scene in variant_scenes.items():
-        disp_cyc, _ = rasterize_view(rig, scene, "cyclopean", include_segmentation=True)
+        vp = variant_paths[vk]
+        disp_cyc, seg_cyc = rasterize_view(rig, scene, "cyclopean", include_segmentation=True)
         disp_left, _ = rasterize_view(rig, scene, "left", include_segmentation=False)
-        write_npy(variant_disp_paths[vk]["disp"], disp_cyc, (height, width), "<f4", "f")
-        write_npy(variant_disp_paths[vk]["disp_left"], disp_left, (height, width), "<f4", "f")
+        boundary = segmentation_boundary(seg_cyc, width, height)
+        udf = distance_transform_from_boundary(boundary, width, height)
+        udf_preview_rgb = rasterize_boundary_preview_rgb(rig, scene, boundary)
+
+        write_npy(vp["disp"], disp_cyc, (height, width), "<f4", "f")
+        write_npy(vp["disp_left"], disp_left, (height, width), "<f4", "f")
+        write_npy(vp["seg"], seg_cyc, (height, width), "|u1", "B")
+        write_npy(vp["field"], udf, (height, width, 1), "<f4", "f")
+        write_boundary_preview_svg(vp["udf"], rig, scene, boundary)
+        write_png(vp["udf_png"], width, height, udf_preview_rgb)
 
     write_shared_variant_metadata(shared_paths["metadata"], rig, variant_scenes, spec, stem)
 
@@ -3730,12 +3760,13 @@ def generate_shared_variant_outputs(
     print(f"  crossed-pair PNG preview   '{os.path.basename(shared_paths['crossed_png'])}'")
     print(f"  parallel-pair PNG preview  '{os.path.basename(shared_paths['parallel_png'])}'")
     for vk in variant_keys:
-        print(f"  cyclopean disparity ({vk})".ljust(30) + f"'{os.path.basename(variant_disp_paths[vk]['disp'])}'")
-        print(f"  left disparity ({vk})".ljust(30) + f"'{os.path.basename(variant_disp_paths[vk]['disp_left'])}'")
-    print(f"  segmentation map           '{os.path.basename(shared_paths['seg'])}'")
-    print(f"  UDF field                  '{os.path.basename(shared_paths['field'])}'")
-    print(f"  UDF boundary preview       '{os.path.basename(shared_paths['udf'])}'")
-    print(f"  UDF preview PNG            '{os.path.basename(shared_paths['udf_png'])}'")
+        vp = variant_paths[vk]
+        print(f"  cyclopean disparity ({vk})".ljust(30) + f"'{os.path.basename(vp['disp'])}'")
+        print(f"  left disparity ({vk})".ljust(30) + f"'{os.path.basename(vp['disp_left'])}'")
+        print(f"  segmentation map ({vk})".ljust(30) + f"'{os.path.basename(vp['seg'])}'")
+        print(f"  UDF field ({vk})".ljust(30) + f"'{os.path.basename(vp['field'])}'")
+        print(f"  UDF boundary preview ({vk})".ljust(30) + f"'{os.path.basename(vp['udf'])}'")
+        print(f"  UDF preview PNG ({vk})".ljust(30) + f"'{os.path.basename(vp['udf_png'])}'")
     print(f"  metadata                   '{os.path.basename(shared_paths['metadata'])}'")
     if not args.no_summary:
         print(f"  all-outputs summary        '{os.path.basename(shared_paths['summary'])}'")
