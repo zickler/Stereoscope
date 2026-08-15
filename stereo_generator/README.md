@@ -190,14 +190,14 @@ These tables summarize every flag and its default; `python3 generate_perceptual_
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--svgsquare-square-size-frac` | `0.40` | Square size as a fraction of `min(image height, width)`. |
+| `--svgsquare-square-size-frac` | `0.20` | Square size as a fraction of `min(image height, width)`. |
 | `--svgsquare-square-z` | `1.2` | Depth of the near square; must be nearer than `--svgsquare-background-z`. |
 | `--svgsquare-background-z` | `1.6` | Depth of the far background plane. |
 | `--svgsquare-square-texture` | `cow_pattern.svg` | SVG file textured onto the square (must have a `<pattern>` fill). |
 | `--svgsquare-background-texture` | `wavy_lines.svg` | SVG file textured onto the background, scaled to fill the frame. |
 | `--svgsquare-crop-x-frac` | `0.5` | Horizontal position (0–1) of the square's texture crop window within the available margin. |
 | `--svgsquare-crop-y-frac` | `0.5` | Vertical position (0–1) of that crop window. |
-| `--svgsquare-crop-scale` | `1.0` | Crop window size as a fraction of the square (texture-native units), scaled to fill the square. `1.0` crops at native scale (no resizing); `<1` zooms in (bigger/coarser spots); `>1` zooms out (smaller/finer spots). |
+| `--svgsquare-crop-scale` | `0.6` | Crop window size as a fraction of the square (texture-native units), scaled to fill the square. `1.0` crops at native scale (no resizing); `<1` zooms in (bigger/coarser spots); `>1` zooms out (smaller/finer spots). |
 
 ## Further help / customizing parameters
 

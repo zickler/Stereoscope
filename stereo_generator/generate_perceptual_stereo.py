@@ -3018,9 +3018,9 @@ def build_summary_panels(input_dir: str, stem: str) -> List[Panel]:
     field_asset, field_subtitle = colorize_float_map(read_npy(paths["field"]), zero_is_background=False)
 
     return [
-        Panel("Physical left image", relative_label(paths["left"], input_dir), svg_data_uri(paths["left"])),
+        Panel("Left image", relative_label(paths["left"], input_dir), svg_data_uri(paths["left"])),
         Panel("Cyclopean image", relative_label(paths["cyclopean"], input_dir), svg_data_uri(paths["cyclopean"])),
-        Panel("Physical right image", relative_label(paths["right"], input_dir), svg_data_uri(paths["right"])),
+        Panel("Right image", relative_label(paths["right"], input_dir), svg_data_uri(paths["right"])),
         Panel("Left-view disparity", left_disp_subtitle, left_disp_asset),
         Panel("Left-view segmentation", left_seg_subtitle, left_seg_asset),
         Panel("Left-view UDF", left_field_subtitle, left_field_asset),
@@ -3511,9 +3511,9 @@ def build_shared_variant_summary_panels(
     disp_range = summary_disp_value_range([npy for pair in disp_npys.values() for npy in pair])
 
     panels = [
-        Panel("Physical left image", relative_label(shared_paths["left"], input_dir), svg_data_uri(shared_paths["left"])),
+        Panel("Left image", relative_label(shared_paths["left"], input_dir), svg_data_uri(shared_paths["left"])),
         Panel("Cyclopean image", relative_label(shared_paths["cyclopean"], input_dir), svg_data_uri(shared_paths["cyclopean"])),
-        Panel("Physical right image", relative_label(shared_paths["right"], input_dir), svg_data_uri(shared_paths["right"])),
+        Panel("Right image", relative_label(shared_paths["right"], input_dir), svg_data_uri(shared_paths["right"])),
     ]
     for vk in variant_keys:
         vp = variant_paths[vk]
@@ -3837,7 +3837,7 @@ def main() -> None:
     parser.add_argument(
         "--svgsquare-square-size-frac",
         type=float,
-        default=0.40,
+        default=0.20,
         help="SVG-square scene: square size as a fraction of min(image height, width).",
     )
     parser.add_argument(
@@ -3879,11 +3879,11 @@ def main() -> None:
     parser.add_argument(
         "--svgsquare-crop-scale",
         type=float,
-        default=1.0,
+        default=0.6,
         help=(
             "SVG-square scene: size of the square-texture crop window as a fraction of the square "
-            "(in texture-native units), scaled up to exactly fill the square. 1.0 (default) crops "
-            "at native scale with no resizing; <1 zooms in for bigger/coarser-looking spots; "
+            "(in texture-native units), scaled up to exactly fill the square. 1.0 crops at native "
+            "scale with no resizing; <1 (default) zooms in for bigger/coarser-looking spots; "
             ">1 zooms out for smaller/finer ones."
         ),
     )
