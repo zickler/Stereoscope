@@ -266,7 +266,6 @@ class Panel:
     title: str
     subtitle: str
     asset: Optional[object] = None
-    text_lines: Optional[List[str]] = None
 
 
 @dataclass(frozen=True)
@@ -367,7 +366,9 @@ def output_paths(out_root: str, stem: str) -> Dict[str, str]:
         "disp": os.path.join(out_root, f"{stem}_disp.npy"),
         "disp_left": os.path.join(out_root, f"{stem}_disp_left.npy"),
         "seg": os.path.join(out_root, f"{stem}_seg.npy"),
+        "seg_left": os.path.join(out_root, f"{stem}_seg_left.npy"),
         "field": os.path.join(out_root, f"{stem}_udf.npy"),
+        "field_left": os.path.join(out_root, f"{stem}_udf_left.npy"),
         "udf": os.path.join(out_root, f"{stem}_udf_preview.svg"),
         "udf_png": os.path.join(out_root, f"{stem}_udf_preview.png"),
         "metadata": os.path.join(out_root, f"{stem}_meta.json"),
@@ -406,7 +407,9 @@ def shared_variant_output_paths(
             "disp": os.path.join(out_root, f"{stem}_{vk}_disp.npy"),
             "disp_left": os.path.join(out_root, f"{stem}_{vk}_disp_left.npy"),
             "seg": os.path.join(out_root, f"{stem}_{vk}_seg.npy"),
+            "seg_left": os.path.join(out_root, f"{stem}_{vk}_seg_left.npy"),
             "field": os.path.join(out_root, f"{stem}_{vk}_udf.npy"),
+            "field_left": os.path.join(out_root, f"{stem}_{vk}_udf_left.npy"),
             "udf": os.path.join(out_root, f"{stem}_{vk}_udf_preview.svg"),
             "udf_png": os.path.join(out_root, f"{stem}_{vk}_udf_preview.png"),
         }
@@ -2851,16 +2854,6 @@ def png_data_uri(width: int, height: int, rgb: Sequence[int]) -> str:
     return "data:image/png;base64," + base64.b64encode(png_bytes(width, height, rgb)).decode("ascii")
 
 
-def png_file_data_uri(path: str) -> ImageAsset:
-    with open(path, "rb") as f:
-        raw = f.read()
-    if len(raw) < 24 or not raw.startswith(b"\x89PNG\r\n\x1a\n") or raw[12:16] != b"IHDR":
-        raise ValueError(f"{path!r} is not a PNG file")
-    width, height = struct.unpack(">II", raw[16:24])
-    uri = "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
-    return ImageAsset(width, height, uri)
-
-
 def svg_data_uri(path: str) -> SvgAsset:
     with open(path, "rb") as f:
         raw = f.read()
@@ -2925,9 +2918,30 @@ def interpolate_palette(t: float, stops: Sequence[Tuple[float, Tuple[int, int, i
     return stops[-1][1]
 
 
-def colorize_float_map(npy: NpyArray, *, zero_is_background: bool) -> Tuple[ImageAsset, str]:
+def summary_disp_value_range(disp_arrays: Sequence[NpyArray]) -> Tuple[float, float]:
+    """Shared vmin/vmax for every disparity panel in a _summary.svg sheet, computed across
+    every disp array that will appear there (both views, and every percept variant if the scene
+    has any) so disparity panels are visually comparable instead of each auto-scaling to its own
+    array. Matches colorize_float_map(..., zero_is_background=True)'s own positive_only
+    convention -- 0 means "no surface here", not a real (small) disparity.
+    """
+    values = [float(v) for npy in disp_arrays for v in npy.data if float(v) > 0.0]
+    if not values:
+        return 0.0, 1.0
+    lo, hi = min(values), max(values)
+    if math.isclose(lo, hi):
+        hi = lo + 1.0
+    return lo, hi
+
+
+def colorize_float_map(
+    npy: NpyArray, *, zero_is_background: bool, value_range_override: Optional[Tuple[float, float]] = None,
+) -> Tuple[ImageAsset, str]:
     width, height = image_dims_from_shape(npy.shape)
-    lo, hi = value_range(npy.data, positive_only=zero_is_background)
+    if value_range_override is not None:
+        lo, hi = value_range_override
+    else:
+        lo, hi = value_range(npy.data, positive_only=zero_is_background)
     stops = (
         (0.00, (47, 55, 142)),
         (0.25, (38, 139, 209)),
@@ -2979,168 +2993,40 @@ def relative_label(path: str, root: str) -> str:
         return path
 
 
-def load_metadata_lines(path: str) -> List[str]:
-    with open(path, "r", encoding="utf-8") as f:
-        meta = json.load(f)
-
-    camera = meta.get("camera", {})
-    plane = meta.get("plane", {})
-    lines = meta.get("lines", [])
-    figure = meta.get("figure", {})
-    order = figure.get("crossed_pair_order", {})
-    half_occlusion = meta.get("half_occlusion")
-
-    if isinstance(half_occlusion, dict):
-        metadata_lines = [
-            f"scene key: {figure.get('scene_key', 'n/a')}",
-            f"source: {figure.get('source', 'n/a')}",
-            f"fusion: {figure.get('fusion', 'n/a')}",
-            f"variant: {half_occlusion.get('variant', 'n/a')}",
-            f"percept: {half_occlusion.get('percept', 'n/a')}",
-            f"image size HxW: {meta.get('image_size', 'n/a')}",
-            f"target center: {half_occlusion.get('target_center_px', 'n/a')}",
-            f"control d1: {half_occlusion.get('control_d1_px', half_occlusion.get('disc_disparity_px', 'n/a'))} px",
-            f"control D_img: {half_occlusion.get('control_disc_diameter_px', half_occlusion.get('disc_diameter_px', 'n/a'))} px",
-            f"control w: {half_occlusion.get('control_w', 'n/a')}",
-            f"crescent width: {half_occlusion.get('crescent_width_px', 'n/a')} px",
-            f"three-depth relation: {half_occlusion.get('three_depth_relation', half_occlusion.get('exact_swap_relation', 'n/a'))}",
-            f"disc z: {half_occlusion.get('disc_z', 'n/a')}",
-            f"stadium/hole z: {half_occlusion.get('stadium_z', 'n/a')}",
-            f"background z: {half_occlusion.get('background_z', 'n/a')}",
-            f"disc disparity d1: {half_occlusion.get('disc_disparity_px', 'n/a')} px",
-            f"stadium/hole disparity d2: {half_occlusion.get('stadium_disparity_px', 'n/a')} px",
-            f"background disparity d3: {half_occlusion.get('background_disparity_px', 'n/a')} px",
-            f"near center offset: {half_occlusion.get('near_center_offset_px', 'n/a')}",
-            f"far center offset: {half_occlusion.get('far_center_offset_px', 'n/a')}",
-            f"near z: {half_occlusion.get('near_z', 'n/a')}",
-            f"far z: {half_occlusion.get('far_z', 'n/a')}",
-            f"near disparity: {half_occlusion.get('near_disparity_px', 'n/a')} px",
-            f"far disparity: {half_occlusion.get('far_disparity_px', 'n/a')} px",
-            f"disc diameter: {half_occlusion.get('disc_diameter_px', 'n/a')}",
-            f"disc radius: {half_occlusion.get('disc_radius_px', half_occlusion.get('near_radius_px', 'n/a'))}",
-            f"stadium straight-length: {half_occlusion.get('stadium_straight_length_px', half_occlusion.get('crescent_width_px', 'n/a'))}",
-            f"stadium half-length: {half_occlusion.get('stadium_half_length_px', 'n/a')}",
-            f"near stadium half-length: {half_occlusion.get('near_stadium_half_length_px', 'n/a')}",
-            f"far disc radius: {half_occlusion.get('far_disc_radius_px', 'n/a')}",
-            f"background support half-length: {half_occlusion.get('background_support_half_length_px', half_occlusion.get('far_support_half_length_px', half_occlusion.get('far_stadium_half_length_px', 'n/a')))}",
-            f"ring radii: {half_occlusion.get('ring_radii_px', 'n/a')}",
-        ]
-        if order:
-            metadata_lines.extend([
-                f"crossed left column: {order.get('left_column', 'n/a')}",
-                f"crossed right column: {order.get('right_column', 'n/a')}",
-            ])
-        return metadata_lines
-
-    wallpaper = meta.get("wallpaper")
-    if isinstance(wallpaper, dict):
-        bounds = wallpaper.get("patch_bounds_cyclopean_px", {})
-        metadata_lines = [
-            f"scene key: {figure.get('scene_key', 'n/a')}",
-            f"source: {figure.get('source', 'n/a')}",
-            f"fusion: {figure.get('fusion', 'n/a')}",
-            f"percept: {wallpaper.get('percept', 'n/a')}",
-            f"surround luminance preset: {wallpaper.get('luminance_preset', 'n/a')}",
-            f"focal_px: {camera.get('focal_px', 'n/a')}",
-            f"baseline: {camera.get('baseline', 'n/a')}",
-            f"image size HxW: {meta.get('image_size', 'n/a')}",
-            f"surround gray: {wallpaper.get('surround_gray', 'n/a')}",
-            f"stripe light/dark gray: {wallpaper.get('stripe_light_gray', 'n/a')}/{wallpaper.get('stripe_dark_gray', 'n/a')}",
-            f"stripe count: {wallpaper.get('stripe_count', 'n/a')}",
-            f"stripe width: {wallpaper.get('stripe_width_px', 0):.2f} px",
-            f"shift (half cycle): {wallpaper.get('shift_px', 0):.2f} px",
-            f"patch bounds cyclopean (L,R,T,B) px: {bounds.get('left', 'n/a')}, {bounds.get('right', 'n/a')}, {bounds.get('top', 'n/a')}, {bounds.get('bottom', 'n/a')}",
-            f"surround z: {wallpaper.get('surround_z', 0):.3g}",
-            f"surround disparity: {wallpaper.get('surround_disparity_px', 0):.3g} px",
-            f"wallpaper z: {wallpaper.get('wallpaper_z', 0):.3g}",
-            f"wallpaper disparity: {wallpaper.get('wallpaper_disparity_px', 0):.3g} px",
-            f"surround dot count: {wallpaper.get('surround_dot_count', 'n/a')}",
-            f"surround dot radius: {wallpaper.get('surround_dot_radius_px', 0):.2f} px",
-            f"surround dot disparity: {wallpaper.get('surround_dot_disparity_px', 0):.3g} px",
-        ]
-        return metadata_lines
-
-    line_depths = ", ".join(f"{item.get('z', 0):.2f}" for item in lines)
-    line_disps = ", ".join(f"{item.get('disparity_px', 0):.2f}" for item in lines)
-    lines_plane = meta.get("lines_plane")
-
-    metadata_lines = [
-        f"scene key: {figure.get('scene_key', 'n/a')}",
-        f"source: {figure.get('source', 'n/a')}",
-        f"fusion: {figure.get('fusion', 'n/a')}",
-        f"lines mode: {figure.get('lines_mode', 'forest')}",
-        f"focal_px: {camera.get('focal_px', 'n/a')}",
-        f"baseline: {camera.get('baseline', 'n/a')}",
-        f"principal point: {camera.get('principal_point_px', 'n/a')}",
-        f"image size HxW: {meta.get('image_size', 'n/a')}",
-        f"plane z: {plane.get('z', 0):.3g}",
-        f"plane disparity: {plane.get('disparity_px', 0):.3g} px",
-        f"line count: {len(lines)}",
-        f"line mean-z values: {line_depths}",
-        f"line mean-disparities: {line_disps}",
-    ]
-    if isinstance(lines_plane, dict):
-        metadata_lines.extend([
-            f"forest plane tilt x/y (deg): {lines_plane.get('tilt_x_deg', 'n/a')}/{lines_plane.get('tilt_y_deg', 'n/a')}",
-            f"forest plane ref_z (nearest boundary depth): {lines_plane.get('ref_z', 'n/a')}",
-        ])
-    if order:
-        metadata_lines.extend([
-            f"crossed left column: {order.get('left_column', 'n/a')}",
-            f"crossed right column: {order.get('right_column', 'n/a')}",
-        ])
-    return metadata_lines
-
-
 def build_summary_panels(input_dir: str, stem: str) -> List[Panel]:
+    """Nine panels, three rows of three: physical left/cyclopean/right images, then the
+    left-view (disp, seg, UDF) ground truth, then the cyclopean (disp, seg, UDF) ground truth.
+    Every disp panel shares one vmin/vmax (see summary_disp_value_range) so they're visually
+    comparable rather than each auto-scaling to its own array.
+    """
     paths = output_paths(input_dir, stem)
-    expected_keys = (
-        "cyclopean",
-        "left",
-        "right",
-        "crossed",
-        "parallel",
-        "cyclopean_png",
-        "left_png",
-        "right_png",
-        "crossed_png",
-        "parallel_png",
-        "disp",
-        "disp_left",
-        "seg",
-        "field",
-        "udf",
-        "udf_png",
-        "metadata",
-    )
+    expected_keys = ("left", "cyclopean", "right", "disp_left", "seg_left", "field_left", "disp", "seg", "field")
     missing = [paths[key] for key in expected_keys if not os.path.exists(paths[key])]
     if missing:
         formatted = "\n  ".join(missing)
         raise FileNotFoundError(f"missing expected output files:\n  {formatted}")
 
-    disp_asset, disp_subtitle = colorize_float_map(read_npy(paths["disp"]), zero_is_background=True)
-    left_disp_asset, left_disp_subtitle = colorize_float_map(read_npy(paths["disp_left"]), zero_is_background=True)
+    disp_left_npy = read_npy(paths["disp_left"])
+    disp_npy = read_npy(paths["disp"])
+    disp_range = summary_disp_value_range([disp_left_npy, disp_npy])
+
+    left_disp_asset, left_disp_subtitle = colorize_float_map(disp_left_npy, zero_is_background=True, value_range_override=disp_range)
+    disp_asset, disp_subtitle = colorize_float_map(disp_npy, zero_is_background=True, value_range_override=disp_range)
+    left_seg_asset, left_seg_subtitle = colorize_segmentation(read_npy(paths["seg_left"]))
     seg_asset, seg_subtitle = colorize_segmentation(read_npy(paths["seg"]))
+    left_field_asset, left_field_subtitle = colorize_float_map(read_npy(paths["field_left"]), zero_is_background=False)
     field_asset, field_subtitle = colorize_float_map(read_npy(paths["field"]), zero_is_background=False)
 
     return [
-        Panel("Cyclopean image", relative_label(paths["cyclopean"], input_dir), svg_data_uri(paths["cyclopean"])),
         Panel("Physical left image", relative_label(paths["left"], input_dir), svg_data_uri(paths["left"])),
+        Panel("Cyclopean image", relative_label(paths["cyclopean"], input_dir), svg_data_uri(paths["cyclopean"])),
         Panel("Physical right image", relative_label(paths["right"], input_dir), svg_data_uri(paths["right"])),
-        Panel("Crossed-fusion pair", relative_label(paths["crossed"], input_dir), svg_data_uri(paths["crossed"])),
-        Panel("Parallel-order pair", relative_label(paths["parallel"], input_dir), svg_data_uri(paths["parallel"])),
-        Panel("Cyclopean PNG", relative_label(paths["cyclopean_png"], input_dir), png_file_data_uri(paths["cyclopean_png"])),
-        Panel("Physical left PNG", relative_label(paths["left_png"], input_dir), png_file_data_uri(paths["left_png"])),
-        Panel("Physical right PNG", relative_label(paths["right_png"], input_dir), png_file_data_uri(paths["right_png"])),
-        Panel("Crossed pair PNG", relative_label(paths["crossed_png"], input_dir), png_file_data_uri(paths["crossed_png"])),
-        Panel("Parallel pair PNG", relative_label(paths["parallel_png"], input_dir), png_file_data_uri(paths["parallel_png"])),
-        Panel("Cyclopean disparity", disp_subtitle, disp_asset),
         Panel("Left-view disparity", left_disp_subtitle, left_disp_asset),
-        Panel("Segmentation map", seg_subtitle, seg_asset),
-        Panel("UDF field", field_subtitle, field_asset),
-        Panel("UDF boundary preview", relative_label(paths["udf"], input_dir), svg_data_uri(paths["udf"])),
-        Panel("UDF preview PNG", relative_label(paths["udf_png"], input_dir), png_file_data_uri(paths["udf_png"])),
-        Panel("Scene metadata", relative_label(paths["metadata"], input_dir), text_lines=load_metadata_lines(paths["metadata"])),
+        Panel("Left-view segmentation", left_seg_subtitle, left_seg_asset),
+        Panel("Left-view UDF", left_field_subtitle, left_field_asset),
+        Panel("Cyclopean disparity", disp_subtitle, disp_asset),
+        Panel("Cyclopean segmentation", seg_subtitle, seg_asset),
+        Panel("Cyclopean UDF", field_subtitle, field_asset),
     ]
 
 
@@ -3173,15 +3059,6 @@ def panel_svg(panel: Panel, x: int, y: int, width: int, height: int) -> str:
             f'  <image x="{draw_x:.3f}" y="{draw_y:.3f}" width="{draw_w:.3f}" '
             f'height="{draw_h:.3f}" href="{asset.data_uri}" preserveAspectRatio="xMidYMid meet"/>\n'
         )
-    elif panel.text_lines is not None:
-        text_x = content_x - x
-        text_y = content_y - y + 16
-        parts.append(f'  <text x="{text_x}" y="{text_y}" class="metadata-text">\n')
-        for idx, line in enumerate(panel.text_lines):
-            dy = 0 if idx == 0 else 20
-            parts.append(f'    <tspan x="{text_x}" dy="{dy}">{html.escape(line)}</tspan>\n')
-        parts.append("  </text>\n")
-
     parts.append("</g>\n")
     return "".join(parts)
 
@@ -3214,7 +3091,6 @@ def write_summary_svg(
         "      .subtitle { font-size: 13px; fill: #53606f; }\n",
         "      .panel-title { font-size: 16px; font-weight: 700; }\n",
         "      .panel-subtitle { font-size: 11px; fill: #6b7280; }\n",
-        "      .metadata-text { font-size: 12px; fill: #2e3440; }\n",
         "    </style>\n",
         "  </defs>\n",
         '  <rect x="0" y="0" width="100%" height="100%" fill="#f4f6f8"/>\n',
@@ -3473,9 +3349,11 @@ def generate_scene_outputs(
     )
 
     disp_cyc, seg_cyc = rasterize_view(rig, scene, "cyclopean", include_segmentation=True)
-    disp_left, _ = rasterize_view(rig, scene, "left", include_segmentation=False)
+    disp_left, seg_left = rasterize_view(rig, scene, "left", include_segmentation=True)
     boundary = segmentation_boundary(seg_cyc, width, height)
     udf = distance_transform_from_boundary(boundary, width, height)
+    boundary_left = segmentation_boundary(seg_left, width, height)
+    udf_left = distance_transform_from_boundary(boundary_left, width, height)
     udf_preview_rgb = rasterize_boundary_preview_rgb(rig, scene, boundary)
 
     write_png(paths["cyclopean_png"], width, height, cyclopean_rgb)
@@ -3486,7 +3364,9 @@ def generate_scene_outputs(
     write_npy(paths["disp"], disp_cyc, (height, width), "<f4", "f")
     write_npy(paths["disp_left"], disp_left, (height, width), "<f4", "f")
     write_npy(paths["seg"], seg_cyc, (height, width), "|u1", "B")
+    write_npy(paths["seg_left"], seg_left, (height, width), "|u1", "B")
     write_npy(paths["field"], udf, (height, width, 1), "<f4", "f")
+    write_npy(paths["field_left"], udf_left, (height, width, 1), "<f4", "f")
     write_boundary_preview_svg(paths["udf"], rig, scene, boundary)
     write_png(paths["udf_png"], width, height, udf_preview_rgb)
     write_metadata(paths["metadata"], rig, scene, spec)
@@ -3517,7 +3397,9 @@ def generate_scene_outputs(
     print(f"  cyclopean disparity        '{os.path.basename(paths['disp'])}'")
     print(f"  left disparity             '{os.path.basename(paths['disp_left'])}'")
     print(f"  segmentation map           '{os.path.basename(paths['seg'])}'")
+    print(f"  left segmentation map      '{os.path.basename(paths['seg_left'])}'")
     print(f"  UDF field                  '{os.path.basename(paths['field'])}'")
+    print(f"  left UDF field             '{os.path.basename(paths['field_left'])}'")
     print(f"  UDF boundary preview       '{os.path.basename(paths['udf'])}'")
     print(f"  UDF preview PNG            '{os.path.basename(paths['udf_png'])}'")
     print(f"  metadata                   '{os.path.basename(paths['metadata'])}'")
@@ -3609,12 +3491,12 @@ def write_shared_variant_metadata(
 def build_shared_variant_summary_panels(
     input_dir: str, stem: str, variant_keys: Sequence[str],
 ) -> List[Panel]:
+    """One shared image row (left/cyclopean/right), then two rows per variant -- left-view
+    (disp, seg, UDF) and cyclopean (disp, seg, UDF). Every disp panel across every variant and
+    view shares one vmin/vmax (see summary_disp_value_range).
+    """
     shared_paths, variant_paths = shared_variant_output_paths(input_dir, stem, variant_keys)
-    expected_keys = (
-        "cyclopean", "left", "right", "crossed", "parallel",
-        "cyclopean_png", "left_png", "right_png", "crossed_png", "parallel_png",
-        "metadata",
-    )
+    expected_keys = ("left", "cyclopean", "right")
     missing = [shared_paths[key] for key in expected_keys if not os.path.exists(shared_paths[key])]
     for vk in variant_keys:
         missing.extend(p for p in variant_paths[vk].values() if not os.path.exists(p))
@@ -3622,33 +3504,32 @@ def build_shared_variant_summary_panels(
         formatted = "\n  ".join(missing)
         raise FileNotFoundError(f"missing expected output files:\n  {formatted}")
 
+    disp_npys = {
+        vk: (read_npy(variant_paths[vk]["disp_left"]), read_npy(variant_paths[vk]["disp"]))
+        for vk in variant_keys
+    }
+    disp_range = summary_disp_value_range([npy for pair in disp_npys.values() for npy in pair])
+
     panels = [
-        Panel("Cyclopean image", relative_label(shared_paths["cyclopean"], input_dir), svg_data_uri(shared_paths["cyclopean"])),
         Panel("Physical left image", relative_label(shared_paths["left"], input_dir), svg_data_uri(shared_paths["left"])),
+        Panel("Cyclopean image", relative_label(shared_paths["cyclopean"], input_dir), svg_data_uri(shared_paths["cyclopean"])),
         Panel("Physical right image", relative_label(shared_paths["right"], input_dir), svg_data_uri(shared_paths["right"])),
-        Panel("Crossed-fusion pair", relative_label(shared_paths["crossed"], input_dir), svg_data_uri(shared_paths["crossed"])),
-        Panel("Parallel-order pair", relative_label(shared_paths["parallel"], input_dir), svg_data_uri(shared_paths["parallel"])),
-        Panel("Cyclopean PNG", relative_label(shared_paths["cyclopean_png"], input_dir), png_file_data_uri(shared_paths["cyclopean_png"])),
-        Panel("Physical left PNG", relative_label(shared_paths["left_png"], input_dir), png_file_data_uri(shared_paths["left_png"])),
-        Panel("Physical right PNG", relative_label(shared_paths["right_png"], input_dir), png_file_data_uri(shared_paths["right_png"])),
-        Panel("Crossed pair PNG", relative_label(shared_paths["crossed_png"], input_dir), png_file_data_uri(shared_paths["crossed_png"])),
-        Panel("Parallel pair PNG", relative_label(shared_paths["parallel_png"], input_dir), png_file_data_uri(shared_paths["parallel_png"])),
     ]
     for vk in variant_keys:
         vp = variant_paths[vk]
-        disp_asset, disp_subtitle = colorize_float_map(read_npy(vp["disp"]), zero_is_background=True)
-        left_disp_asset, left_disp_subtitle = colorize_float_map(read_npy(vp["disp_left"]), zero_is_background=True)
+        disp_left_npy, disp_npy = disp_npys[vk]
+        left_disp_asset, left_disp_subtitle = colorize_float_map(disp_left_npy, zero_is_background=True, value_range_override=disp_range)
+        left_seg_asset, left_seg_subtitle = colorize_segmentation(read_npy(vp["seg_left"]))
+        left_field_asset, left_field_subtitle = colorize_float_map(read_npy(vp["field_left"]), zero_is_background=False)
+        disp_asset, disp_subtitle = colorize_float_map(disp_npy, zero_is_background=True, value_range_override=disp_range)
         seg_asset, seg_subtitle = colorize_segmentation(read_npy(vp["seg"]))
         field_asset, field_subtitle = colorize_float_map(read_npy(vp["field"]), zero_is_background=False)
-        panels.append(Panel(f"Cyclopean disparity ({vk})", disp_subtitle, disp_asset))
         panels.append(Panel(f"Left-view disparity ({vk})", left_disp_subtitle, left_disp_asset))
-        panels.append(Panel(f"Segmentation map ({vk})", seg_subtitle, seg_asset))
-        panels.append(Panel(f"UDF field ({vk})", field_subtitle, field_asset))
-        panels.append(Panel(f"UDF boundary preview ({vk})", relative_label(vp["udf"], input_dir), svg_data_uri(vp["udf"])))
-        panels.append(Panel(f"UDF preview PNG ({vk})", relative_label(vp["udf_png"], input_dir), png_file_data_uri(vp["udf_png"])))
-    panels.append(
-        Panel("Scene metadata", relative_label(shared_paths["metadata"], input_dir), text_lines=load_metadata_lines(shared_paths["metadata"]))
-    )
+        panels.append(Panel(f"Left-view segmentation ({vk})", left_seg_subtitle, left_seg_asset))
+        panels.append(Panel(f"Left-view UDF ({vk})", left_field_subtitle, left_field_asset))
+        panels.append(Panel(f"Cyclopean disparity ({vk})", disp_subtitle, disp_asset))
+        panels.append(Panel(f"Cyclopean segmentation ({vk})", seg_subtitle, seg_asset))
+        panels.append(Panel(f"Cyclopean UDF ({vk})", field_subtitle, field_asset))
     return panels
 
 
@@ -3722,15 +3603,19 @@ def generate_shared_variant_outputs(
     for vk, scene in variant_scenes.items():
         vp = variant_paths[vk]
         disp_cyc, seg_cyc = rasterize_view(rig, scene, "cyclopean", include_segmentation=True)
-        disp_left, _ = rasterize_view(rig, scene, "left", include_segmentation=False)
+        disp_left, seg_left = rasterize_view(rig, scene, "left", include_segmentation=True)
         boundary = segmentation_boundary(seg_cyc, width, height)
         udf = distance_transform_from_boundary(boundary, width, height)
+        boundary_left = segmentation_boundary(seg_left, width, height)
+        udf_left = distance_transform_from_boundary(boundary_left, width, height)
         udf_preview_rgb = rasterize_boundary_preview_rgb(rig, scene, boundary)
 
         write_npy(vp["disp"], disp_cyc, (height, width), "<f4", "f")
         write_npy(vp["disp_left"], disp_left, (height, width), "<f4", "f")
         write_npy(vp["seg"], seg_cyc, (height, width), "|u1", "B")
+        write_npy(vp["seg_left"], seg_left, (height, width), "|u1", "B")
         write_npy(vp["field"], udf, (height, width, 1), "<f4", "f")
+        write_npy(vp["field_left"], udf_left, (height, width, 1), "<f4", "f")
         write_boundary_preview_svg(vp["udf"], rig, scene, boundary)
         write_png(vp["udf_png"], width, height, udf_preview_rgb)
 
@@ -3764,7 +3649,9 @@ def generate_shared_variant_outputs(
         print(f"  cyclopean disparity ({vk})".ljust(30) + f"'{os.path.basename(vp['disp'])}'")
         print(f"  left disparity ({vk})".ljust(30) + f"'{os.path.basename(vp['disp_left'])}'")
         print(f"  segmentation map ({vk})".ljust(30) + f"'{os.path.basename(vp['seg'])}'")
+        print(f"  left segmentation map ({vk})".ljust(30) + f"'{os.path.basename(vp['seg_left'])}'")
         print(f"  UDF field ({vk})".ljust(30) + f"'{os.path.basename(vp['field'])}'")
+        print(f"  left UDF field ({vk})".ljust(30) + f"'{os.path.basename(vp['field_left'])}'")
         print(f"  UDF boundary preview ({vk})".ljust(30) + f"'{os.path.basename(vp['udf'])}'")
         print(f"  UDF preview PNG ({vk})".ljust(30) + f"'{os.path.basename(vp['udf_png'])}'")
     print(f"  metadata                   '{os.path.basename(shared_paths['metadata'])}'")

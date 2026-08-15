@@ -43,10 +43,13 @@ defaults to the scene prefix):
 <stem>_disp.npy                cyclopean disparity map, float32
 <stem>_disp_left.npy           left-view disparity map, float32
 <stem>_seg.npy                 cyclopean segmentation, uint8
-<stem>_udf.npy                 unsigned distance field from the SEG boundary, float32
-<stem>_udf_preview.svg / .png  vector/raster preview of the SEG boundary
+<stem>_seg_left.npy            left-view segmentation, uint8
+<stem>_udf.npy                 unsigned distance field from the cyclopean SEG boundary, float32
+<stem>_udf_left.npy            unsigned distance field from the left-view SEG boundary, float32
+<stem>_udf_preview.svg / .png  vector/raster preview of the cyclopean SEG boundary
 <stem>_meta.json               full scene/camera parameters
-<stem>_summary.svg             all of the above, labeled, in one sheet
+<stem>_summary.svg             left/cyclopean/right images, then left-view and cyclopean
+                                (disp, seg, UDF) panels, in one labeled sheet
 ```
 
 `gillam2002`, `belhumeur1996_{dimple,pimple}`, and `svg_square` each produce
@@ -63,9 +66,10 @@ side of the patch: "front" treats it as a half-occlusion revealing the
 farther surround (so the patch reads one stripe width narrower on each
 side), while "behind" keeps the full patch width. That makes disparity,
 segmentation, and the UDF derived from it all genuinely percept-dependent,
-so `<stem>_front_disp.npy` / `_disp_left.npy` / `_seg.npy` / `_udf.npy` /
-`_udf_preview.svg` / `_udf_preview.png` and their `<stem>_behind_*`
-counterparts are each written separately per interpretation, while
+so `<stem>_front_disp.npy` / `_disp_left.npy` / `_seg.npy` / `_seg_left.npy` /
+`_udf.npy` / `_udf_left.npy` / `_udf_preview.svg` / `_udf_preview.png` and
+their `<stem>_behind_*` counterparts are each written separately per
+interpretation, while
 `<stem>_meta.json` records both interpretations' `wallpaper_z` /
 `wallpaper_disparity_px` / `disparity_region_cyclopean_px` under a nested
 `"variants"` key. Its default output-dir/stem also splice in the
