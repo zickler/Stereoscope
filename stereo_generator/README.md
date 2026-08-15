@@ -50,12 +50,21 @@ defaults to the scene prefix):
 ```
 
 `gillam2002`, `belhumeur1996_{dimple,pimple}`, and `svg_square` each produce
-exactly one `<stem>`. **`andersonnakayama1994_wallpaper` produces two full, independently
-self-consistent stems per invocation** — `<stem>_front` and `<stem>_behind` —
-one per depth interpretation of the same ambiguous display; there is no
-single "correct" ground truth to pick, so both are always written. Its
-default output-dir/stem also splice in the surround-luminance preset (see
-below), so different luminance runs never collide.
+exactly one `<stem>`. **`andersonnakayama1994_wallpaper` is ambiguous between two
+depth interpretations of the exact same raw display** — "front" (wallpaper
+nearer, occludes surround) and "behind" (wallpaper farther, seen through the
+surround's aperture) — so there is no single "correct" ground-truth disparity
+to pick, and both are always written. Because the two interpretations render
+identically (same images, segmentation, and UDF — only the disparity value
+assigned to the wallpaper region differs), only `<stem>_front_disp.npy` /
+`<stem>_front_disp_left.npy` and `<stem>_behind_disp.npy` /
+`<stem>_behind_disp_left.npy` are duplicated per interpretation; every other
+file (images, `_seg.npy`, `_udf.npy`/`_udf_preview`, `_summary.svg`) is written
+once under the plain `<stem>`, and `<stem>_meta.json` records both
+interpretations' `wallpaper_z`/`wallpaper_disparity_px` under a nested
+`"variants"` key. Its default output-dir/stem also splice in the
+surround-luminance preset (see below), so different luminance runs never
+collide.
 
 ## Generating the figures
 
@@ -91,7 +100,8 @@ done
 
 This writes four output directories (`andersonnakayama1994_wallpaper_dark_outputs`,
 `..._mid_dark_outputs`, `..._mid_light_outputs`, `..._light_outputs`), each
-containing the `_front`/`_behind` pair.
+containing one shared set of images/segmentation/UDF/summary plus a
+`_front`/`_behind` pair of disparity maps (see "Output files" above).
 
 ### SVG-Square (custom)
 
@@ -158,11 +168,11 @@ These tables summarize every flag and its default; `python3 generate_perceptual_
 | `--wallpaper-surround-luminance` | `dark` | One of `dark`/`mid_dark`/`mid_light`/`light`; approximates the paper's 4 background conditions (shifts perceptual bias behind → bistable → front). Both `front`/`behind` ground truth are always generated regardless. |
 | `--wallpaper-stripe-light-gray` | `235` | 0–255 grayscale value for light stripes. |
 | `--wallpaper-stripe-dark-gray` | `40` | 0–255 grayscale value for dark stripes. |
-| `--wallpaper-stripe-width-frac` | `0.040` | Stripe width as a fraction of `min(H, W)`; also fixes the interocular shift (one stripe width = one half cycle) that makes front/behind equally valid — not independently configurable. |
+| `--wallpaper-patch-width-frac` | `0.20` | Total wallpaper patch width (all stripes combined) as a fraction of image height. Stripe width is this divided by `--wallpaper-stripe-count`, which also fixes the interocular shift (one stripe width = one half cycle) that makes front/behind equally valid — not independently configurable. |
 | `--wallpaper-stripe-count` | `10` | Number of stripes (Figure 6 uses 10). |
-| `--wallpaper-patch-height-frac` | `0.20` | Patch height as a fraction of image height. |
+| `--wallpaper-patch-height-frac` | `0.10` | Patch height as a fraction of image height. |
 | `--wallpaper-surround-z` | `1.00` | Reference depth for the surround; bounds how large the stripe-width shift can be. |
-| `--wallpaper-dot-count` | `300` | Number of sparse black dots scattered over the surround. |
+| `--wallpaper-dot-count` | `500` | Number of sparse black dots scattered over the surround. |
 | `--wallpaper-dot-radius-frac` | `0.005` | Surround dot radius as a fraction of `min(H, W)`. |
 | `--wallpaper-dot-seed` | `0` | Random seed for the surround dot layout (deterministic). |
 

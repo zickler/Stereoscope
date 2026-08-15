@@ -57,6 +57,7 @@ import random
 import re
 import struct
 import sys
+import xml.etree.ElementTree as ET
 import zlib
 from array import array
 from dataclasses import dataclass
@@ -67,6 +68,8 @@ DEFAULT_SCENE_KEY = "gillam2002"
 GILLAM_PLANAR_LINES_LABEL = 2
 WALLPAPER_SURROUND_LABEL = 1
 WALLPAPER_STRIPE_LABEL = 2
+SVGSQUARE_BACKGROUND_LABEL = 1
+SVGSQUARE_SQUARE_LABEL = 2
 
 # Illustrative 0-255 gray values approximating the 4 background conditions in
 # Anderson & Nakayama (1994) Figure 6 (dark -> behind-biased, light -> front-biased,
@@ -209,6 +212,34 @@ class WallpaperScene:
 
 
 @dataclass(frozen=True)
+class SvgSquareScene:
+    """A fronto-parallel square nearer than a fronto-parallel background plane --
+    the classic disparity-defined figure-ground display, textured with two
+    user-provided SVG assets (a pattern-tile SVG for the square, a flat-path SVG
+    for the background) rather than the procedural dots/stripes used elsewhere
+    in this file. Defaults to cow_pattern.svg / wavy_lines.svg, but any SVG
+    matching the expected structure works -- see the --svgsquare-* flags.
+    """
+
+    width: int
+    height: int
+    square_size_px: float
+    square_z: float
+    square_disparity_px: float
+    background_z: float
+    background_disparity_px: float
+    square_texture_path: str
+    background_texture_path: str
+    square_crop_x_frac: float
+    square_crop_y_frac: float
+    # Size of the square-texture crop window as a fraction of square_size_px (texture-native
+    # units), scaled up (or down) to exactly fill the square. 1.0 = crop at native scale, no
+    # resizing (grain size matches the source file); <1 zooms in for bigger/coarser-looking
+    # spots; >1 zooms out for smaller/finer ones.
+    square_crop_scale: float
+
+
+@dataclass(frozen=True)
 class NpyArray:
     shape: Tuple[int, ...]
     descr: str
@@ -290,8 +321,17 @@ class SceneSpec:
     # Used instead of build_scene by families that must emit multiple, mutually
     # exclusive ground-truth interpretations of the same kind of display in one
     # invocation (e.g. the ambiguous wallpaper illusion's front/behind pair).
-    # Each entry's output gets written under "<stem>_<variant key>".
+    # Each entry's output gets written under "<stem>_<variant key>" -- unless
+    # variants_share_rendering is set, see below.
     variant_build_scenes: Optional[Dict[str, Callable[[CameraRig, argparse.Namespace], object]]] = None
+    # When True, every variant's rendered/ground-truth output is IDENTICAL except for
+    # disparity (e.g. andersonnakayama1994_wallpaper's front/behind: two equally-valid depth
+    # interpretations of the exact same ambiguous raw display, differing only in which
+    # disparity is assigned to what's visible -- see WallpaperScene). In that case, shared
+    # outputs (images, segmentation, UDF, summary) are written once under the plain stem, and
+    # only disparity + metadata get a per-variant breakdown, instead of duplicating every file
+    # per variant.
+    variants_share_rendering: bool = False
     # For families whose naming should reflect a run-specific CLI choice (e.g. the
     # wallpaper surround-luminance preset), returns the extra token to splice into
     # the prefix: "<prefix>_<token>". Return "" / None for no extra token.
@@ -333,6 +373,42 @@ def output_paths(out_root: str, stem: str) -> Dict[str, str]:
         "metadata": os.path.join(out_root, f"{stem}_meta.json"),
         "summary": os.path.join(out_root, f"{stem}_summary.svg"),
     }
+
+
+def shared_variant_output_paths(
+    out_root: str, stem: str, variant_keys: Sequence[str]
+) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
+    """Like output_paths, but for SceneSpec.variants_share_rendering families: every key
+    except "disp"/"disp_left" is written once under the plain stem (no per-variant suffix),
+    since rendering is identical across variants by construction. Only disparity genuinely
+    differs per variant, so it gets its own path per variant key instead.
+    """
+    shared = {
+        "cyclopean": os.path.join(out_root, f"{stem}_cyclopean.svg"),
+        "left": os.path.join(out_root, f"{stem}_left.svg"),
+        "right": os.path.join(out_root, f"{stem}_right.svg"),
+        "crossed": os.path.join(out_root, f"{stem}_crossed.svg"),
+        "parallel": os.path.join(out_root, f"{stem}_parallel.svg"),
+        "cyclopean_png": os.path.join(out_root, f"{stem}_cyclopean.png"),
+        "left_png": os.path.join(out_root, f"{stem}_left.png"),
+        "right_png": os.path.join(out_root, f"{stem}_right.png"),
+        "crossed_png": os.path.join(out_root, f"{stem}_crossed.png"),
+        "parallel_png": os.path.join(out_root, f"{stem}_parallel.png"),
+        "seg": os.path.join(out_root, f"{stem}_seg.npy"),
+        "field": os.path.join(out_root, f"{stem}_udf.npy"),
+        "udf": os.path.join(out_root, f"{stem}_udf_preview.svg"),
+        "udf_png": os.path.join(out_root, f"{stem}_udf_preview.png"),
+        "metadata": os.path.join(out_root, f"{stem}_meta.json"),
+        "summary": os.path.join(out_root, f"{stem}_summary.svg"),
+    }
+    variant_disp = {
+        vk: {
+            "disp": os.path.join(out_root, f"{stem}_{vk}_disp.npy"),
+            "disp_left": os.path.join(out_root, f"{stem}_{vk}_disp_left.npy"),
+        }
+        for vk in variant_keys
+    }
+    return shared, variant_disp
 
 
 def _format_points(points: Sequence[Point2]) -> str:
@@ -516,6 +592,7 @@ def _wallpaper_svg_body(scene: WallpaperScene, eye: str, *, indent: str = "  ") 
     surround = f"rgb({scene.surround_gray},{scene.surround_gray},{scene.surround_gray})"
     window_left, window_right = _wallpaper_window_bounds(scene, eye)
     stripe_bounds = _wallpaper_stripe_bounds_eye(scene, eye)
+    flip = _wallpaper_phase_flip(scene, eye)
 
     parts = [f'{indent}<rect x="0" y="0" width="{w}" height="{h}" fill="{surround}"/>\n']
     for center in _wallpaper_dot_centers_eye(scene, eye):
@@ -527,7 +604,8 @@ def _wallpaper_svg_body(scene: WallpaperScene, eye: str, *, indent: str = "  ") 
         stripe_right = min(stripe_bounds[i + 1], window_right)
         if stripe_left >= stripe_right:
             continue
-        gray = scene.stripe_light_gray if i % 2 == 0 else scene.stripe_dark_gray
+        is_light = (i % 2 == 0) != flip
+        gray = scene.stripe_light_gray if is_light else scene.stripe_dark_gray
         parts.append(
             f'{indent}<rect x="{stripe_left:.3f}" y="{scene.patch_top_px:.3f}" '
             f'width="{(stripe_right - stripe_left):.3f}" '
@@ -545,6 +623,60 @@ def write_wallpaper_scene_svg(path: str, scene: WallpaperScene, eye: str) -> Non
         f.write("</svg>\n")
 
 
+def _read_svg_inner_markup(path: str, *, exclude_tags: Tuple[str, ...] = ("metadata",)) -> str:
+    """Returns a source SVG file's content between its root <svg> tags verbatim (e.g.
+    cow_pattern.svg's real <defs>/<pattern>/<rect> or wavy_lines.svg's <path> list), so it can
+    be re-embedded exactly via a nested <svg viewBox=...> -- letting the eventual renderer
+    handle patternTransform/bezier curves natively instead of a custom-code approximation.
+    Strips `exclude_tags` first (e.g. cow_pattern.svg's large embedded C2PA <metadata> blob,
+    which is provenance cruft irrelevant to the visual reproduction and would otherwise be
+    duplicated into every output view)."""
+    text = open(path, encoding="utf-8").read()
+    for tag in exclude_tags:
+        text = re.sub(rf"<{tag}\b.*?</{tag}>", "", text, flags=re.DOTALL)
+    match = re.search(r"<svg\b[^>]*>(.*)</svg>\s*$", text, flags=re.DOTALL)
+    if not match:
+        raise ValueError(f"could not find <svg>...</svg> content in {path!r}")
+    return match.group(1).strip()
+
+
+def _svg_viewbox_size(path: str) -> float:
+    root = ET.parse(path).getroot()
+    view_box = root.get("viewBox")
+    if view_box:
+        return float(view_box.split()[2])
+    return float(root.get("width", "256"))
+
+
+def _svgsquare_svg_body(scene: SvgSquareScene, eye: str, *, indent: str = "  ") -> str:
+    w, h = scene.width, scene.height
+    bg_markup = _read_svg_inner_markup(scene.background_texture_path)
+    square_markup = _read_svg_inner_markup(scene.square_texture_path)
+    square_native_size = _svg_viewbox_size(scene.square_texture_path)
+
+    square_size = scene.square_size_px
+    crop_size = square_size * scene.square_crop_scale
+    margin = max(0.0, square_native_size - crop_size)
+    crop_x = scene.square_crop_x_frac * margin
+    crop_y = scene.square_crop_y_frac * margin
+    left, top, _, _ = svgsquare_square_bounds(scene, eye)
+
+    return (
+        f'{indent}<svg x="0" y="0" width="{w}" height="{h}" viewBox="0 0 256 256" '
+        f'preserveAspectRatio="none">\n{bg_markup}\n{indent}</svg>\n'
+        f'{indent}<svg x="{left:.3f}" y="{top:.3f}" width="{square_size:.3f}" height="{square_size:.3f}" '
+        f'viewBox="{crop_x:.3f} {crop_y:.3f} {crop_size:.3f} {crop_size:.3f}">\n{square_markup}\n{indent}</svg>\n'
+    )
+
+
+def write_svgsquare_scene_svg(path: str, scene: SvgSquareScene, eye: str) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(_svg_header(scene.width, scene.height))
+        f.write(_svg_defs())
+        f.write(_svgsquare_svg_body(scene, eye))
+        f.write("</svg>\n")
+
+
 def write_scene_svg(
     path: str,
     rig: CameraRig,
@@ -559,6 +691,9 @@ def write_scene_svg(
         return
     if isinstance(scene, WallpaperScene):
         write_wallpaper_scene_svg(path, scene, eye)
+        return
+    if isinstance(scene, SvgSquareScene):
+        write_svgsquare_scene_svg(path, scene, eye)
         return
 
     with open(path, "w", encoding="utf-8") as f:
@@ -638,6 +773,38 @@ def write_wallpaper_pair_svg(
         f.write("</svg>\n")
 
 
+def write_svgsquare_pair_svg(
+    path: str,
+    scene: SvgSquareScene,
+    *,
+    crossed: bool,
+    gap: int,
+) -> None:
+    w, h = scene.width, scene.height
+    total_w = 2 * w + gap
+    left_column_eye = "right" if crossed else "left"
+    right_column_eye = "left" if crossed else "right"
+    note = (
+        "Crossed fusion: left column is the right-eye image; "
+        "right column is the left-eye image."
+        if crossed else
+        "Parallel order: left column is the left-eye image; right column is the right-eye image."
+    )
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(_svg_header(total_w, h))
+        f.write(f"  <!-- {note} -->\n")
+        f.write(_svg_defs())
+        f.write('  <rect x="0" y="0" width="100%" height="100%" fill="#fff"/>\n')
+        f.write('  <g transform="translate(0,0)">\n')
+        f.write(_svgsquare_svg_body(scene, left_column_eye, indent="    "))
+        f.write("  </g>\n")
+        f.write(f'  <g transform="translate({w + gap},0)">\n')
+        f.write(_svgsquare_svg_body(scene, right_column_eye, indent="    "))
+        f.write("  </g>\n")
+        f.write("</svg>\n")
+
+
 def write_pair_svg(
     path: str,
     rig: CameraRig,
@@ -649,6 +816,9 @@ def write_pair_svg(
 ) -> None:
     if isinstance(scene, HalfOcclusionScene):
         write_half_occlusion_pair_svg(path, scene, crossed=crossed, gap=gap)
+        return
+    if isinstance(scene, SvgSquareScene):
+        write_svgsquare_pair_svg(path, scene, crossed=crossed, gap=gap)
         return
     if isinstance(scene, WallpaperScene):
         write_wallpaper_pair_svg(path, scene, crossed=crossed, gap=gap)
@@ -1001,26 +1171,51 @@ def _wallpaper_eye_offset(disparity_px: float, eye: str) -> float:
 
 
 def _wallpaper_window_bounds(scene: WallpaperScene, eye: str) -> Tuple[float, float]:
-    """The nearer surface owns the occluding contour: for 'front' that's the
-    wallpaper's own projected edges; for 'behind' it's the surround's aperture
-    edges. Returns the visible [left, right) window for this eye in pixels.
+    """The aperture in the surround is always anchored to the surround's own
+    depth, for both percepts -- physically, it's a hole in the surround plane,
+    so its edges move with the surround regardless of which depth story is
+    assigned to what's visible through it. Returns the visible [left, right)
+    window for this eye in pixels.
     """
-    anchor_disparity = scene.wallpaper_disparity_px if scene.percept == "front" else scene.surround_disparity_px
-    offset = _wallpaper_eye_offset(anchor_disparity, eye)
+    offset = _wallpaper_eye_offset(scene.surround_disparity_px, eye)
     return scene.patch_left_px + offset, scene.patch_right_px + offset
 
 
 def _wallpaper_stripe_bounds_eye(scene: WallpaperScene, eye: str) -> List[float]:
-    """Stripe boundary positions for this eye. The whole stripe pattern is a
-    rigid block at the wallpaper's own depth, so every boundary shares the same
-    offset regardless of percept -- only the visible window (see
-    _wallpaper_window_bounds) differs between 'front' and 'behind'.
+    """Stripe boundary positions for this eye. These always share the window's
+    own (surround-anchored) offset -- see _wallpaper_window_bounds -- so the
+    grid is always exactly aligned with the window and every stripe is full
+    width, never clipped. The wallpaper's own depth is instead encoded purely
+    via which stripes are light vs dark; see _wallpaper_phase_flip.
     """
-    offset = _wallpaper_eye_offset(scene.wallpaper_disparity_px, eye)
+    offset = _wallpaper_eye_offset(scene.surround_disparity_px, eye)
     return [
         scene.patch_left_px + i * scene.stripe_width_px + offset
         for i in range(scene.stripe_count + 1)
     ]
+
+
+def _wallpaper_phase_flip(scene: WallpaperScene, eye: str) -> bool:
+    """Anderson & Nakayama (1994) create the front/behind ambiguity by shifting
+    the wallpaper pattern in ONE eye's image by exactly one stripe width (one
+    half cycle) relative to the other -- not a symmetric per-eye disparity
+    split like every other surface in this file. Since the stripe pattern is
+    periodic with period 2*stripe_width_px, an odd number of stripe-widths of
+    shift is indistinguishable from inverting stripe color at the same (grid-
+    aligned) positions, which is what this renders instead of literally
+    sliding anything: the grid always aligns with the window (see
+    _wallpaper_stripe_bounds_eye), and only the right eye's stripe coloring is
+    flipped. front and behind differ only in the sign of
+    (wallpaper_disparity_px - surround_disparity_px), and +stripe_width_px /
+    -stripe_width_px are equivalent mod 2*stripe_width_px, so front and behind
+    necessarily render identical raw pixels -- exactly the point of the
+    display being ambiguous. Only the recorded ground truth (disp/seg)
+    differs between them.
+    """
+    if eye != "right":
+        return False
+    extra_periods = round((scene.wallpaper_disparity_px - scene.surround_disparity_px) / scene.stripe_width_px)
+    return extra_periods % 2 != 0
 
 
 def _wallpaper_dot_centers_eye(scene: WallpaperScene, eye: str) -> List[Point2]:
@@ -1079,7 +1274,7 @@ def make_wallpaper_scene(
     surround_gray: int,
     stripe_light_gray: int,
     stripe_dark_gray: int,
-    stripe_width_frac: float,
+    patch_width_frac: float,
     stripe_count: int,
     patch_height_frac: float,
     luminance_preset: str,
@@ -1094,7 +1289,8 @@ def make_wallpaper_scene(
 
     w, h = rig.width, rig.height
     scale = min(w, h)
-    stripe_width_px = max(1.0, stripe_width_frac * scale)
+    total_width_px = max(1.0, patch_width_frac * h)
+    stripe_width_px = total_width_px / stripe_count
     # Anderson & Nakayama (1994): "shifting the wallpaper pattern in one of the
     # two eyes by one stripe width, or one half cycle." This exact half-cycle
     # shift is what makes the front and behind interpretations equally valid.
@@ -1109,11 +1305,10 @@ def make_wallpaper_scene(
             raise ValueError(
                 "the 'behind' wallpaper percept requires the surround's disparity to exceed "
                 "the stripe-width shift; increase --wallpaper-surround-z (moves the surround "
-                "closer) or decrease --wallpaper-stripe-width-frac"
+                "closer) or decrease --wallpaper-patch-width-frac"
             )
     wallpaper_z = rig.focal_px * rig.baseline / wallpaper_disparity_px
 
-    total_width_px = stripe_count * stripe_width_px
     patch_height_px = patch_height_frac * h
     cx, cy = rig.cx, rig.cy
     patch_left_px = cx - 0.5 * total_width_px
@@ -1160,6 +1355,61 @@ def make_wallpaper_scene(
         dot_radius_px=dot_radius_px,
         dot_seed=dot_seed,
     )
+
+
+def make_svgsquare_scene(
+    rig: CameraRig,
+    *,
+    square_size_frac: float,
+    square_z: float,
+    background_z: float,
+    square_texture_path: str,
+    background_texture_path: str,
+    square_crop_x_frac: float,
+    square_crop_y_frac: float,
+    square_crop_scale: float = 1.0,
+) -> SvgSquareScene:
+    if square_z >= background_z:
+        raise ValueError(
+            f"--svgsquare-square-z ({square_z}) must be nearer than "
+            f"--svgsquare-background-z ({background_z}) for the square to be the near surface"
+        )
+    if square_crop_scale <= 0.0:
+        raise ValueError(f"--svgsquare-crop-scale must be positive, got {square_crop_scale}")
+    scale = min(rig.width, rig.height)
+    square_size_px = square_size_frac * scale
+    return SvgSquareScene(
+        width=rig.width,
+        height=rig.height,
+        square_size_px=square_size_px,
+        square_z=square_z,
+        square_disparity_px=rig.disparity(square_z),
+        background_z=background_z,
+        background_disparity_px=rig.disparity(background_z),
+        square_texture_path=square_texture_path,
+        background_texture_path=background_texture_path,
+        square_crop_x_frac=square_crop_x_frac,
+        square_crop_y_frac=square_crop_y_frac,
+        square_crop_scale=square_crop_scale,
+    )
+
+
+def svgsquare_square_bounds(scene: SvgSquareScene, eye: str) -> Tuple[float, float, float, float]:
+    """Per-eye (left, top, right, bottom) pixel bounds of the square, centered in the
+    frame and shifted horizontally by half its disparity per eye (cyclopean: no shift)."""
+    if eye == "cyclopean":
+        offset_x = 0.0
+    elif eye == "left":
+        offset_x = 0.5 * scene.square_disparity_px
+    elif eye == "right":
+        offset_x = -0.5 * scene.square_disparity_px
+    else:
+        raise ValueError(f"unknown eye {eye!r}")
+
+    cx = 0.5 * (scene.width - 1) + offset_x
+    cy = 0.5 * (scene.height - 1)
+    half = 0.5 * scene.square_size_px
+    return cx - half, cy - half, cx + half, cy + half
 
 
 def _point_segment_distance(px: float, py: float, ax: float, ay: float, bx: float, by: float) -> float:
@@ -1405,6 +1655,323 @@ def _fill_rect_rgb(
         pixels[start:start + 3 * (xmax - xmin)] = row_span
 
 
+# --- Minimal SVG texture rasterizer, scoped to cow_pattern.svg / wavy_lines.svg -----------
+#
+# This is NOT a general SVG renderer. It supports exactly the path commands those two files
+# actually use (confirmed by scanning both files' `d` attributes for command letters):
+# M/m, L/l, H/h, V/v, C/c, S/s, Z/z -- each <path> is a single subpath (one M...Z, no compound
+# holes). Fill color is given either directly (fill="#rrggbb") or via a CSS class resolved
+# against a <style> block (cow_pattern.svg uses the latter).
+
+def _flatten_cubic_bezier(p0: Point2, p1: Point2, p2: Point2, p3: Point2, segments: int = 12) -> List[Point2]:
+    points = []
+    for k in range(1, segments + 1):
+        t = k / segments
+        mt = 1.0 - t
+        a, b, c, dd = mt ** 3, 3 * mt * mt * t, 3 * mt * t * t, t ** 3
+        points.append(Point2(
+            a * p0.x + b * p1.x + c * p2.x + dd * p3.x,
+            a * p0.y + b * p1.y + c * p2.y + dd * p3.y,
+        ))
+    return points
+
+
+def _parse_svg_path_d(d: str) -> List[Point2]:
+    tokens = re.findall(r"[MmLlHhVvCcSsZz]|-?\d*\.?\d+(?:[eE][+-]?\d+)?", d)
+    i, n = 0, len(tokens)
+    cur = Point2(0.0, 0.0)
+    start = cur
+    # Second control point of the most recent C/S curve, for S/s's implicit reflection.
+    last_cubic_control: Optional[Point2] = None
+    points: List[Point2] = []
+    cmd: Optional[str] = None
+
+    def read_num() -> float:
+        nonlocal i
+        val = float(tokens[i])
+        i += 1
+        return val
+
+    while i < n:
+        tok = tokens[i]
+        if tok in "MmLlHhVvCcSsZz":
+            cmd = tok
+            i += 1
+            if cmd in ("Z", "z"):
+                points.append(start)
+                cur = start
+                last_cubic_control = None
+                continue
+        if cmd in ("M", "m"):
+            x, y = read_num(), read_num()
+            if cmd == "m" and points:
+                x, y = cur.x + x, cur.y + y
+            cur = Point2(x, y)
+            start = cur
+            points.append(cur)
+            last_cubic_control = None
+        elif cmd in ("L", "l"):
+            x, y = read_num(), read_num()
+            if cmd == "l":
+                x, y = cur.x + x, cur.y + y
+            cur = Point2(x, y)
+            points.append(cur)
+            last_cubic_control = None
+        elif cmd in ("H", "h"):
+            x = read_num()
+            if cmd == "h":
+                x = cur.x + x
+            cur = Point2(x, cur.y)
+            points.append(cur)
+            last_cubic_control = None
+        elif cmd in ("V", "v"):
+            y = read_num()
+            if cmd == "v":
+                y = cur.y + y
+            cur = Point2(cur.x, y)
+            points.append(cur)
+            last_cubic_control = None
+        elif cmd in ("C", "c"):
+            x1, y1 = read_num(), read_num()
+            x2, y2 = read_num(), read_num()
+            x, y = read_num(), read_num()
+            if cmd == "c":
+                x1, y1 = cur.x + x1, cur.y + y1
+                x2, y2 = cur.x + x2, cur.y + y2
+                x, y = cur.x + x, cur.y + y
+            p1, p2, p3 = Point2(x1, y1), Point2(x2, y2), Point2(x, y)
+            points.extend(_flatten_cubic_bezier(cur, p1, p2, p3))
+            cur = p3
+            last_cubic_control = p2
+        elif cmd in ("S", "s"):
+            x2, y2 = read_num(), read_num()
+            x, y = read_num(), read_num()
+            if cmd == "s":
+                x2, y2 = cur.x + x2, cur.y + y2
+                x, y = cur.x + x, cur.y + y
+            if last_cubic_control is not None:
+                p1 = Point2(2 * cur.x - last_cubic_control.x, 2 * cur.y - last_cubic_control.y)
+            else:
+                p1 = cur
+            p2, p3 = Point2(x2, y2), Point2(x, y)
+            points.extend(_flatten_cubic_bezier(cur, p1, p2, p3))
+            cur = p3
+            last_cubic_control = p2
+        else:
+            raise ValueError(f"unsupported SVG path command near token {tok!r} in {d!r}")
+    return points
+
+
+def _fill_polygon_rgb(pixels: array, width: int, height: int, points: Sequence[Point2], color: Tuple[int, int, int]) -> None:
+    """Even-odd scanline fill. Correct for simple (non-self-intersecting) closed polygons,
+    which is all cow_pattern.svg / wavy_lines.svg contain -- no nonzero-winding/hole support."""
+    if len(points) < 3:
+        return
+    ymin = max(0, int(math.floor(min(p.y for p in points))))
+    ymax = min(height - 1, int(math.ceil(max(p.y for p in points))))
+    n = len(points)
+    row_template = array("B", color)
+    for y in range(ymin, ymax + 1):
+        py = y + 0.5
+        xs = []
+        for k in range(n):
+            x1, y1 = points[k].x, points[k].y
+            x2, y2 = points[(k + 1) % n].x, points[(k + 1) % n].y
+            if y1 == y2:
+                continue
+            if (y1 <= py < y2) or (y2 <= py < y1):
+                xs.append(x1 + (py - y1) / (y2 - y1) * (x2 - x1))
+        xs.sort()
+        for k in range(0, len(xs) - 1, 2):
+            x0 = max(0, int(math.ceil(xs[k] - 0.5)))
+            x1i = min(width - 1, int(math.floor(xs[k + 1] - 0.5)))
+            if x0 <= x1i:
+                start = 3 * (y * width + x0)
+                pixels[start:start + 3 * (x1i - x0 + 1)] = row_template * (x1i - x0 + 1)
+
+
+def _parse_hex_color(text: str) -> Optional[Tuple[int, int, int]]:
+    text = text.strip()
+    if not text.startswith("#"):
+        return None
+    hex_part = text[1:]
+    if len(hex_part) == 3:
+        hex_part = "".join(ch * 2 for ch in hex_part)
+    if len(hex_part) != 6:
+        return None
+    return (int(hex_part[0:2], 16), int(hex_part[2:4], 16), int(hex_part[4:6], 16))
+
+
+_SVG_NS = "{http://www.w3.org/2000/svg}"
+
+
+def _svg_style_fill_map(root: ET.Element) -> Dict[str, Tuple[int, int, int]]:
+    fills: Dict[str, Tuple[int, int, int]] = {}
+    style_elem = root.find(f".//{_SVG_NS}style")
+    if style_elem is not None and style_elem.text:
+        for rule in re.finditer(r"\.([\w-]+)\s*\{([^}]*)\}", style_elem.text):
+            fill_match = re.search(r"fill:\s*([^;]+);", rule.group(2))
+            if fill_match:
+                color = _parse_hex_color(fill_match.group(1))
+                if color is not None:
+                    fills[rule.group(1)] = color
+    return fills
+
+
+def _element_fill(elem: ET.Element, style_fills: Dict[str, Tuple[int, int, int]]) -> Optional[Tuple[int, int, int]]:
+    fill_attr = elem.get("fill")
+    if fill_attr is not None:
+        return _parse_hex_color(fill_attr)
+    class_attr = elem.get("class")
+    if class_attr is not None:
+        return style_fills.get(class_attr)
+    return None
+
+
+# Vector-texture loaders below parse source SVGs into (polygon, color) pairs in the file's own
+# native coordinate units, WITHOUT rasterizing. Composition (scale-to-fit for the background,
+# crop-then-scale for the square) is done by transforming each polygon vertex analytically to
+# the exact final output resolution and rasterizing once there. This matters: rasterizing at
+# some fixed intermediate resolution and then resampling that pixel buffer (the original
+# implementation) compounds hard-edge aliasing with resampling artifacts, producing visible
+# pixelation -- especially when zooming in (upscaling a small raster). Transforming vertices
+# first and filling once avoids that resampling step entirely.
+
+_svg_polygon_cache: Dict[str, Tuple[List[Tuple[List[Point2], Tuple[int, int, int]]], float, float]] = {}
+
+
+def _svg_path_polygons(
+    elems: Iterable[ET.Element], style_fills: Dict[str, Tuple[int, int, int]]
+) -> List[Tuple[List[Point2], Tuple[int, int, int]]]:
+    polygons = []
+    for elem in elems:
+        d = elem.get("d")
+        if not d:
+            continue
+        color = _element_fill(elem, style_fills)
+        if color is None:
+            continue
+        polygons.append((_parse_svg_path_d(d), color))
+    return polygons
+
+
+def _load_flat_svg_polygons(path: str) -> Tuple[List[Tuple[List[Point2], Tuple[int, int, int]]], float, float]:
+    """Parses a flat-path SVG (a <path> list directly under the root, like wavy_lines.svg) into
+    (polygon, color) pairs plus its native (width, height) from the viewBox."""
+    key = ("flat", path)
+    if key in _svg_polygon_cache:
+        return _svg_polygon_cache[key]
+    root = ET.parse(path).getroot()
+    view_box = root.get("viewBox", "0 0 256 256").split()
+    native_w, native_h = float(view_box[2]), float(view_box[3])
+    style_fills = _svg_style_fill_map(root)
+    polygons = _svg_path_polygons(root.iter(f"{_SVG_NS}path"), style_fills)
+    result = (polygons, native_w, native_h)
+    _svg_polygon_cache[key] = result
+    return result
+
+
+def _load_pattern_svg_polygons(path: str) -> Tuple[List[Tuple[List[Point2], Tuple[int, int, int]]], float, float]:
+    """Parses a <pattern>-based SVG (like cow_pattern.svg) into the tile's own local (polygon,
+    color) pairs plus the tile's (width, height)."""
+    key = ("pattern", path)
+    if key in _svg_polygon_cache:
+        return _svg_polygon_cache[key]
+    root = ET.parse(path).getroot()
+    pattern = root.find(f".//{_SVG_NS}pattern")
+    if pattern is None:
+        raise ValueError(f"{path!r} has no <pattern> element -- expected a pattern-tile texture like cow_pattern.svg")
+    tile_w = float(pattern.get("width", "256"))
+    tile_h = float(pattern.get("height", "256"))
+    style_fills = _svg_style_fill_map(root)
+    polygons = _svg_path_polygons(pattern.iter(f"{_SVG_NS}path"), style_fills)
+    result = (polygons, tile_w, tile_h)
+    _svg_polygon_cache[key] = result
+    return result
+
+
+def _rasterize_flat_svg_to_fit(pixels: array, dst_w: int, dst_h: int, path: str) -> None:
+    """Renders a flat-path SVG's polygons scaled to exactly fill dst_w x dst_h (the PNG
+    equivalent of the "scale to fit" nested-viewBox used for the .svg outputs)."""
+    polygons, native_w, native_h = _load_flat_svg_polygons(path)
+    scale_x = dst_w / native_w
+    scale_y = dst_h / native_h
+    for points, color in polygons:
+        transformed = [Point2(p.x * scale_x, p.y * scale_y) for p in points]
+        _fill_polygon_rgb(pixels, dst_w, dst_h, transformed, color)
+
+
+# Repeat scale applied to a pattern SVG's own tile when tiling it for the PNG raster path.
+# Chosen to visually match the grain density of a typical source file's own patternTransform
+# (e.g. cow_pattern.svg's scale(.3 -.3)) WITHOUT replicating that transform's specific huge
+# translate offset or y-flip -- those are Illustrator-export artifacts (arbitrary tile phase),
+# not meaningful design choices, and aren't verifiable without a real SVG renderer to diff
+# against. The .svg outputs embed the source file verbatim instead, so they use the exact
+# real transform.
+_PATTERN_TILE_SCALE = 0.3
+
+
+def _rasterize_pattern_svg_cropped(
+    pixels: array, dst_size: int, path: str,
+    *, crop_scale: float, crop_x_frac: float, crop_y_frac: float,
+) -> None:
+    """Renders a crop_scale*dst_size window (in the source tile's own units, after tiling at
+    _PATTERN_TILE_SCALE) of the tiled pattern, scaled to exactly fill dst_size x dst_size.
+    Each visible tile copy's polygons are transformed (tile scale, tile offset, crop origin,
+    final zoom) directly to output coordinates before filling -- no intermediate raster."""
+    polygons, tile_w, _tile_h = _load_pattern_svg_polygons(path)
+    scaled_tile = max(1e-6, tile_w * _PATTERN_TILE_SCALE)
+    crop_size = max(1e-6, dst_size * crop_scale)
+    # Same virtual-canvas sizing as before (just enough repeats to cover the crop window plus
+    # one tile of margin), used purely for coordinate math now, not an actual raster buffer.
+    repeats = max(1, int(math.ceil(crop_size / scaled_tile)) + 1)
+    canvas_size = repeats * scaled_tile
+    crop_x = crop_x_frac * (canvas_size - crop_size)
+    crop_y = crop_y_frac * (canvas_size - crop_size)
+    render_scale = dst_size / crop_size
+
+    for ty in range(repeats):
+        offset_y = ty * scaled_tile
+        if offset_y + scaled_tile <= crop_y or offset_y >= crop_y + crop_size:
+            continue
+        for tx in range(repeats):
+            offset_x = tx * scaled_tile
+            if offset_x + scaled_tile <= crop_x or offset_x >= crop_x + crop_size:
+                continue
+            for points, color in polygons:
+                transformed = [
+                    Point2(
+                        (p.x * _PATTERN_TILE_SCALE + offset_x - crop_x) * render_scale,
+                        (p.y * _PATTERN_TILE_SCALE + offset_y - crop_y) * render_scale,
+                    )
+                    for p in points
+                ]
+                _fill_polygon_rgb(pixels, dst_size, dst_size, transformed, color)
+
+
+def _blit_copy_rgb(
+    dst: array, dst_w: int, dst_h: int,
+    src: array, src_w: int, src_h: int,
+    dst_x: int, dst_y: int,
+) -> None:
+    """1:1 pixel copy of src into dst at (dst_x, dst_y), clipped to dst's bounds. No resizing
+    happens here, so this never introduces resampling artifacts -- src is expected to already
+    be rendered at its final display resolution."""
+    x_lo = max(0, dst_x)
+    x_hi = min(dst_w, dst_x + src_w)
+    if x_lo >= x_hi:
+        return
+    span = x_hi - x_lo
+    src_x0 = x_lo - dst_x
+    for row in range(src_h):
+        y = dst_y + row
+        if y < 0 or y >= dst_h:
+            continue
+        s = 3 * (row * src_w + src_x0)
+        d = 3 * (y * dst_w + x_lo)
+        dst[d:d + 3 * span] = src[s:s + 3 * span]
+
+
 def rasterize_wallpaper_scene_rgb(scene: WallpaperScene, eye: str) -> array:
     w, h = scene.width, scene.height
     pixels = _rgb_canvas(w, h, (scene.surround_gray,) * 3)
@@ -1414,18 +1981,68 @@ def rasterize_wallpaper_scene_rgb(scene: WallpaperScene, eye: str) -> array:
 
     window_left, window_right = _wallpaper_window_bounds(scene, eye)
     stripe_bounds = _wallpaper_stripe_bounds_eye(scene, eye)
+    flip = _wallpaper_phase_flip(scene, eye)
 
     for i in range(scene.stripe_count):
         stripe_left = max(stripe_bounds[i], window_left)
         stripe_right = min(stripe_bounds[i + 1], window_right)
         if stripe_left >= stripe_right:
             continue
-        gray = scene.stripe_light_gray if i % 2 == 0 else scene.stripe_dark_gray
+        is_light = (i % 2 == 0) != flip
+        gray = scene.stripe_light_gray if is_light else scene.stripe_dark_gray
         _fill_rect_rgb(
             pixels, w, h, stripe_left, stripe_right, scene.patch_top_px, scene.patch_bottom_px, (gray,) * 3,
         )
 
     return pixels
+
+
+def rasterize_svgsquare_scene_rgb(scene: SvgSquareScene, eye: str) -> array:
+    w, h = scene.width, scene.height
+    pixels = _rgb_canvas(w, h)
+    _rasterize_flat_svg_to_fit(pixels, w, h, scene.background_texture_path)
+
+    square_size = max(1, int(round(scene.square_size_px)))
+    square_pixels = _rgb_canvas(square_size, square_size, (255, 255, 255))
+    _rasterize_pattern_svg_cropped(
+        square_pixels, square_size, scene.square_texture_path,
+        crop_scale=scene.square_crop_scale, crop_x_frac=scene.square_crop_x_frac, crop_y_frac=scene.square_crop_y_frac,
+    )
+    left, top, _, _ = svgsquare_square_bounds(scene, eye)
+    _blit_copy_rgb(pixels, w, h, square_pixels, square_size, square_size, int(round(left)), int(round(top)))
+
+    return pixels
+
+
+def rasterize_svgsquare_maps(
+    scene: SvgSquareScene,
+    eye: str,
+    *,
+    include_segmentation: bool,
+) -> Tuple[array, array]:
+    w, h = scene.width, scene.height
+    n = w * h
+    disp = array("f", [scene.background_disparity_px]) * n
+    seg = array("B", [0]) * n
+    if include_segmentation:
+        seg = array("B", [SVGSQUARE_BACKGROUND_LABEL]) * n
+
+    left, top, right, bottom = svgsquare_square_bounds(scene, eye)
+    xmin = max(0, int(math.floor(left)))
+    xmax = min(w, int(math.ceil(right)))
+    ymin = max(0, int(math.floor(top)))
+    ymax = min(h, int(math.ceil(bottom)))
+    if xmin < xmax and ymin < ymax:
+        span = xmax - xmin
+        disp_span = array("f", [scene.square_disparity_px]) * span
+        seg_span = array("B", [SVGSQUARE_SQUARE_LABEL]) * span
+        for y in range(ymin, ymax):
+            start = y * w + xmin
+            disp[start:start + span] = disp_span
+            if include_segmentation:
+                seg[start:start + span] = seg_span
+
+    return disp, seg
 
 
 def rasterize_wallpaper_maps(
@@ -1531,6 +2148,8 @@ def rasterize_scene_rgb(
         return rasterize_half_occlusion_scene_rgb(scene, eye)
     if isinstance(scene, WallpaperScene):
         return rasterize_wallpaper_scene_rgb(scene, eye)
+    if isinstance(scene, SvgSquareScene):
+        return rasterize_svgsquare_scene_rgb(scene, eye)
 
     w, h = scene.width, scene.height
     pixels = _rgb_canvas(w, h)
@@ -1636,6 +2255,8 @@ def rasterize_view(
         return rasterize_half_occlusion_maps(scene, eye, include_segmentation=include_segmentation)
     if isinstance(scene, WallpaperScene):
         return rasterize_wallpaper_maps(scene, eye, include_segmentation=include_segmentation)
+    if isinstance(scene, SvgSquareScene):
+        return rasterize_svgsquare_maps(scene, eye, include_segmentation=include_segmentation)
 
     w, h = scene.width, scene.height
     n = w * h
@@ -1862,6 +2483,27 @@ def write_boundary_preview_svg(
             f.write("</svg>\n")
         return
 
+    if isinstance(scene, SvgSquareScene):
+        w, h = scene.width, scene.height
+        cells = []
+        stride = max(1, min(w, h) // 256)
+        for y in range(0, h, stride):
+            row = y * w
+            for x in range(0, w, stride):
+                if boundary[row + x]:
+                    cells.append(
+                        f'  <rect x="{x}" y="{y}" width="{stride}" height="{stride}" '
+                        f'fill="#d62728" opacity="0.45"/>\n'
+                    )
+
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(_svg_header(w, h))
+            f.write(_svg_defs())
+            f.write(_svgsquare_svg_body(scene, "cyclopean"))
+            f.write("".join(cells))
+            f.write("</svg>\n")
+        return
+
     w, h = scene.width, scene.height
     cells = []
     stride = max(1, min(w, h) // 256)
@@ -1985,7 +2627,7 @@ def write_metadata(path: str, rig: CameraRig, scene: object, spec: SceneSpec) ->
             f.write("\n")
         return
 
-    if isinstance(scene, WallpaperScene):
+    if isinstance(scene, SvgSquareScene):
         data = {
             "camera": {
                 "focal_px": rig.focal_px,
@@ -1998,37 +2640,30 @@ def write_metadata(path: str, rig: CameraRig, scene: object, spec: SceneSpec) ->
                 "scene_key": spec.key,
                 "source": spec.source,
                 "fusion": spec.fusion,
-            },
-            "wallpaper": {
-                "percept": scene.percept,
-                "luminance_preset": scene.luminance_preset,
-                "surround_gray": scene.surround_gray,
-                "stripe_light_gray": scene.stripe_light_gray,
-                "stripe_dark_gray": scene.stripe_dark_gray,
-                "stripe_count": scene.stripe_count,
-                "stripe_width_px": scene.stripe_width_px,
-                "shift_px": scene.shift_px,
-                "patch_bounds_cyclopean_px": {
-                    "left": scene.patch_left_px,
-                    "right": scene.patch_right_px,
-                    "top": scene.patch_top_px,
-                    "bottom": scene.patch_bottom_px,
+                "crossed_pair_order": {
+                    "left_column": "physical right-eye image",
+                    "right_column": "physical left-eye image",
                 },
-                "surround_z": scene.surround_z,
-                "surround_disparity_px": scene.surround_disparity_px,
-                "wallpaper_z": scene.wallpaper_z,
-                "wallpaper_disparity_px": scene.wallpaper_disparity_px,
-                "surround_dot_count": len(scene.dots),
-                "surround_dot_radius_px": scene.dot_radius_px,
-                "surround_dot_seed": scene.dot_seed,
-                "surround_dot_disparity_px": scene.surround_disparity_px,
+            },
+            "svg_square": {
+                "square_size_px": scene.square_size_px,
+                "square_z": scene.square_z,
+                "square_disparity_px": scene.square_disparity_px,
+                "background_z": scene.background_z,
+                "background_disparity_px": scene.background_disparity_px,
+                "square_texture_path": scene.square_texture_path,
+                "background_texture_path": scene.background_texture_path,
+                "square_crop_x_frac": scene.square_crop_x_frac,
+                "square_crop_y_frac": scene.square_crop_y_frac,
+                "square_crop_scale": scene.square_crop_scale,
+                "segmentation_labels": {
+                    "background": SVGSQUARE_BACKGROUND_LABEL,
+                    "square": SVGSQUARE_SQUARE_LABEL,
+                },
                 "description": (
-                    "Anderson & Nakayama (1994) Figure 6 ambiguous wallpaper pattern. The stripe "
-                    "pattern is shifted by exactly one stripe width (one half cycle) between the "
-                    "eyes, which makes the 'front' (wallpaper nearer, occludes surround) and "
-                    "'behind' (wallpaper farther, occluded by the surround's aperture) "
-                    "interpretations equally valid explanations of the same kind of display; this "
-                    "file records the '" + scene.percept + "' interpretation specifically."
+                    f"A fronto-parallel square ({scene.square_texture_path} texture) nearer than a "
+                    f"fronto-parallel background plane ({scene.background_texture_path} texture) -- a "
+                    "classic disparity-defined figure-ground display."
                 ),
             },
         }
@@ -2639,7 +3274,7 @@ def _build_wallpaper_scene(rig: CameraRig, args: argparse.Namespace, percept: st
         surround_gray=WALLPAPER_SURROUND_LUMINANCE_PRESETS[args.wallpaper_surround_luminance],
         stripe_light_gray=args.wallpaper_stripe_light_gray,
         stripe_dark_gray=args.wallpaper_stripe_dark_gray,
-        stripe_width_frac=args.wallpaper_stripe_width_frac,
+        patch_width_frac=args.wallpaper_patch_width_frac,
         stripe_count=args.wallpaper_stripe_count,
         patch_height_frac=args.wallpaper_patch_height_frac,
         luminance_preset=args.wallpaper_surround_luminance,
@@ -2655,6 +3290,20 @@ def build_andersonnakayama1994_wallpaper_front_scene(rig: CameraRig, args: argpa
 
 def build_andersonnakayama1994_wallpaper_behind_scene(rig: CameraRig, args: argparse.Namespace) -> WallpaperScene:
     return _build_wallpaper_scene(rig, args, "behind")
+
+
+def build_svgsquare_scene(rig: CameraRig, args: argparse.Namespace) -> SvgSquareScene:
+    return make_svgsquare_scene(
+        rig,
+        square_size_frac=args.svgsquare_square_size_frac,
+        square_z=args.svgsquare_square_z,
+        background_z=args.svgsquare_background_z,
+        square_texture_path=args.svgsquare_square_texture,
+        background_texture_path=args.svgsquare_background_texture,
+        square_crop_x_frac=args.svgsquare_crop_x_frac,
+        square_crop_y_frac=args.svgsquare_crop_y_frac,
+        square_crop_scale=args.svgsquare_crop_scale,
+    )
 
 
 SCENE_SPECS: Dict[str, SceneSpec] = {
@@ -2692,7 +3341,16 @@ SCENE_SPECS: Dict[str, SceneSpec] = {
             "front": build_andersonnakayama1994_wallpaper_front_scene,
             "behind": build_andersonnakayama1994_wallpaper_behind_scene,
         },
+        variants_share_rendering=True,
         prefix_suffix=lambda args: args.wallpaper_surround_luminance,
+    ),
+    "svg_square": SceneSpec(
+        key="svg_square",
+        prefix="svg_square",
+        summary_title="SVG-Square Output Summary",
+        source="Custom scene: SVG-textured square in front of an SVG-textured background",
+        fusion="crossed",
+        build_scene=build_svgsquare_scene,
     ),
 }
 
@@ -2707,6 +3365,7 @@ SCENE_ALIASES = {
     "wallpaper1994": "andersonnakayama1994_wallpaper",
     "wallpaper": "andersonnakayama1994_wallpaper",
     "andersonnakayama": "andersonnakayama1994_wallpaper",
+    "svgsquare": "svg_square",
 }
 
 
@@ -2845,6 +3504,243 @@ def generate_scene_outputs(
         print(f"  all-outputs summary        '{os.path.basename(paths['summary'])}'")
 
 
+def write_shared_variant_metadata(
+    path: str, rig: CameraRig, variant_scenes: Dict[str, object], spec: SceneSpec, stem: str,
+) -> None:
+    """Metadata writer for SceneSpec.variants_share_rendering families: hoists every field that
+    is identical across variants (by construction) into shared top-level blocks, and nests the
+    few fields that genuinely differ per variant (percept, wallpaper_z/disparity) under
+    "variants". Currently only WallpaperScene uses this path.
+    """
+    any_scene = next(iter(variant_scenes.values()))
+    if not isinstance(any_scene, WallpaperScene):
+        raise TypeError(f"write_shared_variant_metadata: unsupported scene type {type(any_scene)!r}")
+
+    variants = {
+        key: {
+            "percept": scene.percept,
+            "wallpaper_z": scene.wallpaper_z,
+            "wallpaper_disparity_px": scene.wallpaper_disparity_px,
+        }
+        for key, scene in variant_scenes.items()
+    }
+    data = {
+        "camera": {
+            "focal_px": rig.focal_px,
+            "baseline": rig.baseline,
+            "principal_point_px": [rig.cx, rig.cy],
+            "convention": "x_left = x_cyclopean + disparity/2; x_right = x_cyclopean - disparity/2",
+        },
+        "image_size": [any_scene.height, any_scene.width],
+        "figure": {
+            "scene_key": spec.key,
+            "source": spec.source,
+            "fusion": spec.fusion,
+        },
+        "wallpaper": {
+            "luminance_preset": any_scene.luminance_preset,
+            "surround_gray": any_scene.surround_gray,
+            "stripe_light_gray": any_scene.stripe_light_gray,
+            "stripe_dark_gray": any_scene.stripe_dark_gray,
+            "stripe_count": any_scene.stripe_count,
+            "stripe_width_px": any_scene.stripe_width_px,
+            "shift_px": any_scene.shift_px,
+            "patch_bounds_cyclopean_px": {
+                "left": any_scene.patch_left_px,
+                "right": any_scene.patch_right_px,
+                "top": any_scene.patch_top_px,
+                "bottom": any_scene.patch_bottom_px,
+            },
+            "surround_z": any_scene.surround_z,
+            "surround_disparity_px": any_scene.surround_disparity_px,
+            "surround_dot_count": len(any_scene.dots),
+            "surround_dot_radius_px": any_scene.dot_radius_px,
+            "surround_dot_seed": any_scene.dot_seed,
+            "surround_dot_disparity_px": any_scene.surround_disparity_px,
+            "description": (
+                "Anderson & Nakayama (1994) Figure 6 ambiguous wallpaper pattern. The stripe "
+                "pattern is shifted by exactly one stripe width (one half cycle) between the "
+                "eyes, which makes the 'front' (wallpaper nearer, occludes surround) and "
+                "'behind' (wallpaper farther, occluded by the surround's aperture) "
+                "interpretations equally valid explanations of the same raw display -- the "
+                "rendered images, segmentation, and UDF above are identical between "
+                "interpretations by construction, so they are written once; only the "
+                "ground-truth disparity differs, and is recorded separately per variant as "
+                f"'{stem}_<variant>_disp.npy' / '{stem}_<variant>_disp_left.npy' (see 'variants' below)."
+            ),
+            "variants": variants,
+        },
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+
+def build_shared_variant_summary_panels(
+    input_dir: str, stem: str, variant_keys: Sequence[str],
+) -> List[Panel]:
+    shared_paths, variant_disp_paths = shared_variant_output_paths(input_dir, stem, variant_keys)
+    expected_keys = (
+        "cyclopean", "left", "right", "crossed", "parallel",
+        "cyclopean_png", "left_png", "right_png", "crossed_png", "parallel_png",
+        "seg", "field", "udf", "udf_png", "metadata",
+    )
+    missing = [shared_paths[key] for key in expected_keys if not os.path.exists(shared_paths[key])]
+    for vk in variant_keys:
+        missing.extend(p for p in variant_disp_paths[vk].values() if not os.path.exists(p))
+    if missing:
+        formatted = "\n  ".join(missing)
+        raise FileNotFoundError(f"missing expected output files:\n  {formatted}")
+
+    seg_asset, seg_subtitle = colorize_segmentation(read_npy(shared_paths["seg"]))
+    field_asset, field_subtitle = colorize_float_map(read_npy(shared_paths["field"]), zero_is_background=False)
+
+    panels = [
+        Panel("Cyclopean image", relative_label(shared_paths["cyclopean"], input_dir), svg_data_uri(shared_paths["cyclopean"])),
+        Panel("Physical left image", relative_label(shared_paths["left"], input_dir), svg_data_uri(shared_paths["left"])),
+        Panel("Physical right image", relative_label(shared_paths["right"], input_dir), svg_data_uri(shared_paths["right"])),
+        Panel("Crossed-fusion pair", relative_label(shared_paths["crossed"], input_dir), svg_data_uri(shared_paths["crossed"])),
+        Panel("Parallel-order pair", relative_label(shared_paths["parallel"], input_dir), svg_data_uri(shared_paths["parallel"])),
+        Panel("Cyclopean PNG", relative_label(shared_paths["cyclopean_png"], input_dir), png_file_data_uri(shared_paths["cyclopean_png"])),
+        Panel("Physical left PNG", relative_label(shared_paths["left_png"], input_dir), png_file_data_uri(shared_paths["left_png"])),
+        Panel("Physical right PNG", relative_label(shared_paths["right_png"], input_dir), png_file_data_uri(shared_paths["right_png"])),
+        Panel("Crossed pair PNG", relative_label(shared_paths["crossed_png"], input_dir), png_file_data_uri(shared_paths["crossed_png"])),
+        Panel("Parallel pair PNG", relative_label(shared_paths["parallel_png"], input_dir), png_file_data_uri(shared_paths["parallel_png"])),
+    ]
+    for vk in variant_keys:
+        disp_paths = variant_disp_paths[vk]
+        disp_asset, disp_subtitle = colorize_float_map(read_npy(disp_paths["disp"]), zero_is_background=True)
+        left_disp_asset, left_disp_subtitle = colorize_float_map(read_npy(disp_paths["disp_left"]), zero_is_background=True)
+        panels.append(Panel(f"Cyclopean disparity ({vk})", disp_subtitle, disp_asset))
+        panels.append(Panel(f"Left-view disparity ({vk})", left_disp_subtitle, left_disp_asset))
+    panels.extend([
+        Panel("Segmentation map", seg_subtitle, seg_asset),
+        Panel("UDF field", field_subtitle, field_asset),
+        Panel("UDF boundary preview", relative_label(shared_paths["udf"], input_dir), svg_data_uri(shared_paths["udf"])),
+        Panel("UDF preview PNG", relative_label(shared_paths["udf_png"], input_dir), png_file_data_uri(shared_paths["udf_png"])),
+        Panel("Scene metadata", relative_label(shared_paths["metadata"], input_dir), text_lines=load_metadata_lines(shared_paths["metadata"])),
+    ])
+    return panels
+
+
+def generate_shared_variant_outputs(
+    rig: CameraRig,
+    variant_scenes: Dict[str, object],
+    spec: SceneSpec,
+    args: argparse.Namespace,
+    out_root: str,
+    stem: str,
+    summary_title: str,
+) -> None:
+    """Orchestrator for SceneSpec.variants_share_rendering families: renders every shared output
+    (images, segmentation, UDF, summary) once from an arbitrary representative variant, and only
+    writes ground-truth disparity separately per variant, since that's the one thing that actually
+    differs between interpretations.
+    """
+    width, height = rig.width, rig.height
+    variant_keys = list(variant_scenes.keys())
+    any_scene = next(iter(variant_scenes.values()))
+    shared_paths, variant_disp_paths = shared_variant_output_paths(out_root, stem, variant_keys)
+    ensure_output_dir(out_root)
+
+    write_scene_svg(
+        shared_paths["left"], rig, any_scene, "left",
+        show_plane_outline=args.show_plane_outline, show_boundary_preview=args.show_boundary_preview,
+    )
+    write_scene_svg(
+        shared_paths["right"], rig, any_scene, "right",
+        show_plane_outline=args.show_plane_outline, show_boundary_preview=args.show_boundary_preview,
+    )
+    write_scene_svg(
+        shared_paths["cyclopean"], rig, any_scene, "cyclopean",
+        show_plane_outline=args.show_plane_outline, show_boundary_preview=args.show_boundary_preview,
+    )
+
+    pair_gap = int(round(args.pair_gap_frac * width))
+    write_pair_svg(
+        shared_paths["crossed"], rig, any_scene, crossed=True, gap=pair_gap, show_plane_outline=args.show_plane_outline,
+    )
+    write_pair_svg(
+        shared_paths["parallel"], rig, any_scene, crossed=False, gap=pair_gap, show_plane_outline=args.show_plane_outline,
+    )
+
+    left_rgb = rasterize_scene_rgb(
+        rig, any_scene, "left",
+        show_plane_outline=args.show_plane_outline, show_boundary_preview=args.show_boundary_preview,
+    )
+    right_rgb = rasterize_scene_rgb(
+        rig, any_scene, "right",
+        show_plane_outline=args.show_plane_outline, show_boundary_preview=args.show_boundary_preview,
+    )
+    cyclopean_rgb = rasterize_scene_rgb(
+        rig, any_scene, "cyclopean",
+        show_plane_outline=args.show_plane_outline, show_boundary_preview=args.show_boundary_preview,
+    )
+    crossed_rgb, crossed_width, crossed_height = rasterize_pair_rgb(
+        rig, any_scene, crossed=True, gap=pair_gap, show_plane_outline=args.show_plane_outline,
+    )
+    parallel_rgb, parallel_width, parallel_height = rasterize_pair_rgb(
+        rig, any_scene, crossed=False, gap=pair_gap, show_plane_outline=args.show_plane_outline,
+    )
+
+    _, seg_cyc = rasterize_view(rig, any_scene, "cyclopean", include_segmentation=True)
+    boundary = segmentation_boundary(seg_cyc, width, height)
+    udf = distance_transform_from_boundary(boundary, width, height)
+    udf_preview_rgb = rasterize_boundary_preview_rgb(rig, any_scene, boundary)
+
+    write_png(shared_paths["cyclopean_png"], width, height, cyclopean_rgb)
+    write_png(shared_paths["left_png"], width, height, left_rgb)
+    write_png(shared_paths["right_png"], width, height, right_rgb)
+    write_png(shared_paths["crossed_png"], crossed_width, crossed_height, crossed_rgb)
+    write_png(shared_paths["parallel_png"], parallel_width, parallel_height, parallel_rgb)
+    write_npy(shared_paths["seg"], seg_cyc, (height, width), "|u1", "B")
+    write_npy(shared_paths["field"], udf, (height, width, 1), "<f4", "f")
+    write_boundary_preview_svg(shared_paths["udf"], rig, any_scene, boundary)
+    write_png(shared_paths["udf_png"], width, height, udf_preview_rgb)
+
+    for vk, scene in variant_scenes.items():
+        disp_cyc, _ = rasterize_view(rig, scene, "cyclopean", include_segmentation=True)
+        disp_left, _ = rasterize_view(rig, scene, "left", include_segmentation=False)
+        write_npy(variant_disp_paths[vk]["disp"], disp_cyc, (height, width), "<f4", "f")
+        write_npy(variant_disp_paths[vk]["disp_left"], disp_left, (height, width), "<f4", "f")
+
+    write_shared_variant_metadata(shared_paths["metadata"], rig, variant_scenes, spec, stem)
+
+    if not args.no_summary:
+        panels = build_shared_variant_summary_panels(out_root, stem, variant_keys)
+        write_summary_svg(
+            shared_paths["summary"],
+            panels,
+            input_dir=out_root,
+            stem=stem,
+            summary_title=summary_title,
+            columns=args.summary_columns,
+        )
+
+    print(f"Generated scene              '{spec.key}' (stem '{stem}', variants: {', '.join(variant_keys)})")
+    print(f"Saved outputs in             '{out_root}'")
+    print(f"  cyclopean SVG              '{os.path.basename(shared_paths['cyclopean'])}'")
+    print(f"  physical left SVG          '{os.path.basename(shared_paths['left'])}'")
+    print(f"  physical right SVG         '{os.path.basename(shared_paths['right'])}'")
+    print(f"  crossed-fusion pair        '{os.path.basename(shared_paths['crossed'])}'")
+    print(f"  parallel-order pair        '{os.path.basename(shared_paths['parallel'])}'")
+    print(f"  cyclopean PNG preview      '{os.path.basename(shared_paths['cyclopean_png'])}'")
+    print(f"  physical left PNG preview  '{os.path.basename(shared_paths['left_png'])}'")
+    print(f"  physical right PNG preview '{os.path.basename(shared_paths['right_png'])}'")
+    print(f"  crossed-pair PNG preview   '{os.path.basename(shared_paths['crossed_png'])}'")
+    print(f"  parallel-pair PNG preview  '{os.path.basename(shared_paths['parallel_png'])}'")
+    for vk in variant_keys:
+        print(f"  cyclopean disparity ({vk})".ljust(30) + f"'{os.path.basename(variant_disp_paths[vk]['disp'])}'")
+        print(f"  left disparity ({vk})".ljust(30) + f"'{os.path.basename(variant_disp_paths[vk]['disp_left'])}'")
+    print(f"  segmentation map           '{os.path.basename(shared_paths['seg'])}'")
+    print(f"  UDF field                  '{os.path.basename(shared_paths['field'])}'")
+    print(f"  UDF boundary preview       '{os.path.basename(shared_paths['udf'])}'")
+    print(f"  UDF preview PNG            '{os.path.basename(shared_paths['udf_png'])}'")
+    print(f"  metadata                   '{os.path.basename(shared_paths['metadata'])}'")
+    if not args.no_summary:
+        print(f"  all-outputs summary        '{os.path.basename(shared_paths['summary'])}'")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate a full stereo-output suite for a named perceptual-science 3D scene."
@@ -2974,13 +3870,14 @@ def main() -> None:
         help="0-255 grayscale value for the wallpaper pattern's dark stripes.",
     )
     parser.add_argument(
-        "--wallpaper-stripe-width-frac",
+        "--wallpaper-patch-width-frac",
         type=float,
-        default=0.040,
+        default=0.20,
         help=(
-            "Wallpaper stripe width as a fraction of min(image height, width). This also fixes "
-            "the interocular shift (one stripe width = one half cycle), which is what makes the "
-            "front/behind interpretations equally valid -- it is not independently configurable."
+            "Total wallpaper patch width (all stripes combined) as a fraction of image height. "
+            "Stripe width is this divided by --wallpaper-stripe-count, which also fixes the "
+            "interocular shift (one stripe width = one half cycle) that makes the front/behind "
+            "interpretations equally valid -- it is not independently configurable."
         ),
     )
     parser.add_argument(
@@ -2992,12 +3889,8 @@ def main() -> None:
     parser.add_argument(
         "--wallpaper-patch-height-frac",
         type=float,
-        default=0.20,
-        help=(
-            "Wallpaper patch height as a fraction of image height. Paired with the default "
-            "stripe count and width, this gives a patch roughly 2:1 wide:tall (spanning ~40%% of "
-            "the frame width), matching Figure 6."
-        ),
+        default=0.10,
+        help="Wallpaper patch height as a fraction of image height.",
     )
     parser.add_argument(
         "--wallpaper-surround-z",
@@ -3008,7 +3901,7 @@ def main() -> None:
     parser.add_argument(
         "--wallpaper-dot-count",
         type=int,
-        default=300,
+        default=500,
         help="Number of sparse black dots scattered over the surround, as in the paper's figures.",
     )
     parser.add_argument(
@@ -3022,6 +3915,59 @@ def main() -> None:
         type=int,
         default=0,
         help="Random seed for the surround dot layout (deterministic; same seed -> same dots).",
+    )
+    parser.add_argument(
+        "--svgsquare-square-size-frac",
+        type=float,
+        default=0.40,
+        help="SVG-square scene: square size as a fraction of min(image height, width).",
+    )
+    parser.add_argument(
+        "--svgsquare-square-z",
+        type=float,
+        default=1.2,
+        help="SVG-square scene: depth of the near square. Must be nearer than --svgsquare-background-z.",
+    )
+    parser.add_argument(
+        "--svgsquare-background-z",
+        type=float,
+        default=1.6,
+        help="SVG-square scene: depth of the far background plane.",
+    )
+    parser.add_argument(
+        "--svgsquare-square-texture",
+        type=str,
+        default="cow_pattern.svg",
+        help="SVG-square scene: SVG file textured onto the square (must have a <pattern> fill, like cow_pattern.svg).",
+    )
+    parser.add_argument(
+        "--svgsquare-background-texture",
+        type=str,
+        default="wavy_lines.svg",
+        help="SVG-square scene: SVG file textured onto the background, scaled to fill the frame.",
+    )
+    parser.add_argument(
+        "--svgsquare-crop-x-frac",
+        type=float,
+        default=0.5,
+        help="SVG-square scene: horizontal position (0-1) of the square's texture crop window within the available margin.",
+    )
+    parser.add_argument(
+        "--svgsquare-crop-y-frac",
+        type=float,
+        default=0.5,
+        help="SVG-square scene: vertical position (0-1) of the square's texture crop window within the available margin.",
+    )
+    parser.add_argument(
+        "--svgsquare-crop-scale",
+        type=float,
+        default=1.0,
+        help=(
+            "SVG-square scene: size of the square-texture crop window as a fraction of the square "
+            "(in texture-native units), scaled up to exactly fill the square. 1.0 (default) crops "
+            "at native scale with no resizing; <1 zooms in for bigger/coarser-looking spots; "
+            ">1 zooms out for smaller/finer ones."
+        ),
     )
     parser.add_argument("--pair-gap-frac", type=float, default=0.16)
     parser.add_argument("--show-plane-outline", action="store_true")
@@ -3068,7 +4014,12 @@ def main() -> None:
     out_root = args.output_dir or spec.default_output_dir(args)
     stem = normalize_stem(args.stem, spec.effective_prefix(args))
 
-    if spec.variant_build_scenes:
+    if spec.variant_build_scenes and spec.variants_share_rendering:
+        variant_scenes = {
+            variant_key: build_fn(rig, args) for variant_key, build_fn in spec.variant_build_scenes.items()
+        }
+        generate_shared_variant_outputs(rig, variant_scenes, spec, args, out_root, stem, spec.summary_title)
+    elif spec.variant_build_scenes:
         for variant_key, build_fn in spec.variant_build_scenes.items():
             scene = build_fn(rig, args)
             variant_stem = f"{stem}_{variant_key}"
