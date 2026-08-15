@@ -987,16 +987,22 @@ def make_figure9a_scene(
 
     # Irregular dot texture copied in spirit from Figure 9A: a white plane whose
     # top edge is suggested by the line terminators and by the absence of dots
-    # above the boundary.
+    # above the boundary. Coordinates are uniformly scaled and recentered
+    # (about the combined dot+line bounding box) from the original figure-derived
+    # layout so the whole collection is centered in the frame and its overall
+    # width matches andersonnakayama1994_wallpaper's default patch width --
+    # otherwise this scene reads as much larger than the other scenes in a
+    # gallery view. --plane-top-frac's default (below) is scaled/recentered the
+    # same way, so the boundary stays flush with the dot cluster's top edge.
     dot_norm = [
-        (0.285, 0.445), (0.350, 0.430), (0.485, 0.430), (0.600, 0.420),
-        (0.675, 0.410), (0.760, 0.430),
-        (0.315, 0.500), (0.405, 0.490), (0.485, 0.475), (0.560, 0.485),
-        (0.635, 0.490), (0.725, 0.485), (0.815, 0.490),
-        (0.260, 0.565), (0.335, 0.565), (0.455, 0.550), (0.545, 0.550),
-        (0.625, 0.575), (0.710, 0.555), (0.790, 0.560),
-        (0.295, 0.640), (0.385, 0.690), (0.470, 0.625), (0.525, 0.615),
-        (0.615, 0.685), (0.690, 0.640),
+        (0.4088, 0.5254), (0.4316, 0.5202), (0.4789, 0.5202), (0.5193, 0.5167),
+        (0.5456, 0.5132), (0.5754, 0.5202),
+        (0.4193, 0.5447), (0.4509, 0.5412), (0.4789, 0.5360), (0.5053, 0.5395),
+        (0.5316, 0.5412), (0.5632, 0.5395), (0.5947, 0.5412),
+        (0.4000, 0.5675), (0.4263, 0.5675), (0.4684, 0.5623), (0.5000, 0.5623),
+        (0.5281, 0.5711), (0.5579, 0.5640), (0.5860, 0.5658),
+        (0.4123, 0.5939), (0.4439, 0.6114), (0.4737, 0.5886), (0.4930, 0.5851),
+        (0.5246, 0.6096), (0.5509, 0.5939),
     ]
     dots = [
         Dot(
@@ -1008,13 +1014,13 @@ def make_figure9a_scene(
 
     boundary = plane_top_y
     line_norm = [
-        ((0.305, boundary / h), (0.385, 0.095)),
-        ((0.395, boundary / h), (0.425, 0.165)),
-        ((0.515, boundary / h), (0.475, 0.100)),
-        ((0.610, boundary / h), (0.550, 0.055)),
-        ((0.680, boundary / h), (0.700, 0.155)),
-        ((0.745, boundary / h), (0.805, 0.165)),
-        ((0.830, boundary / h), (0.805, 0.185)),
+        ((0.4158, boundary / h), (0.4439, 0.4026)),
+        ((0.4474, boundary / h), (0.4579, 0.4272)),
+        ((0.4895, boundary / h), (0.4754, 0.4044)),
+        ((0.5228, boundary / h), (0.5018, 0.3886)),
+        ((0.5474, boundary / h), (0.5544, 0.4237)),
+        ((0.5702, boundary / h), (0.5912, 0.4272)),
+        ((0.6000, boundary / h), (0.5912, 0.4342)),
     ]
 
     lines_plane: Optional[SlantedPlane] = None
@@ -3735,9 +3741,9 @@ def main() -> None:
             "greater than --plane-z."
         ),
     )
-    parser.add_argument("--plane-top-frac", type=float, default=0.385)
-    parser.add_argument("--dot-radius-frac", type=float, default=0.0105)
-    parser.add_argument("--line-stroke-frac", type=float, default=0.0060)
+    parser.add_argument("--plane-top-frac", type=float, default=0.5044)
+    parser.add_argument("--dot-radius-frac", type=float, default=0.0037)
+    parser.add_argument("--line-stroke-frac", type=float, default=0.0021)
     parser.add_argument(
         "--figure2-d1-px",
         type=float,

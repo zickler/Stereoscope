@@ -158,9 +158,9 @@ These tables summarize every flag and its default; `python3 generate_perceptual_
 | `--plane-slant-tilt-x-deg` | `20.0` | Planar mode only. Tilt about the horizontal axis; positive tips the far (top) edge away from the camera. |
 | `--plane-slant-tilt-y-deg` | `0.0` | Planar mode only. Tilt about the vertical axis; positive tips the right edge away from the camera. |
 | `--plane-slant-ref-z` | `1.95` | Planar mode only. Depth at the nearest point of the forest plane's near edge; must exceed `--plane-z`. |
-| `--plane-top-frac` | `0.385` | Top boundary of the dotted plane, as a fraction of image height. |
-| `--dot-radius-frac` | `0.0105` | Dot radius as a fraction of `min(image height, width)`. |
-| `--line-stroke-frac` | `0.0060` | Line stroke width as a fraction of `min(image height, width)`. |
+| `--plane-top-frac` | `0.5044` | Top boundary of the dotted plane, as a fraction of image height. Not independently tunable in practice -- the dot/line layout is hardcoded scaled and centered in the frame (to match `andersonnakayama1994_wallpaper`'s default patch width), and this default is the one value that keeps the boundary flush with that layout's top edge. |
+| `--dot-radius-frac` | `0.0037` | Dot radius as a fraction of `min(image height, width)`. |
+| `--line-stroke-frac` | `0.0021` | Line stroke width as a fraction of `min(image height, width)`. |
 
 ### `belhumeur1996_dimple` / `belhumeur1996_pimple`
 
